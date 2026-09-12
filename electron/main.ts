@@ -1,6 +1,6 @@
 import path from 'node:path'
 import fs from 'node:fs'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, session, shell, Tray } from 'electron'
 import { DatabaseService } from './database'
 import { BRIGHTSPACE_SESSION_PARTITION, BrightspaceService } from './brightspace'
 import { GRADESCOPE_SESSION_PARTITION, GradescopeService } from './gradescope'
@@ -9,7 +9,7 @@ import { CredentialStore } from './credential-store'
 import { canonicalAppDataRoot, prepareStableUserData } from './user-data'
 import { trayLabels } from './tray-menu'
 import { macApplicationMenuTemplate } from './app-menu'
-import { hidesMainWindowOnClose, usesMacApplicationMenu } from './platform'
+import { appZoomPercent, hidesMainWindowOnClose, MINIMUM_WINDOW_SIZE, resolveWindowSize, usesMacApplicationMenu } from './platform'
 import { assertTesseractLanguageData, runtimeAssetPath, tesseractLanguagePath } from './runtime-resources'
 
 let database: DatabaseService
@@ -74,11 +74,13 @@ function requestQuit() {
 
 async function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) { showWindow(); return }
+  const settings = database.getState().settings
+  const windowSize = resolveWindowSize(settings, process.platform, screen.getPrimaryDisplay().workAreaSize)
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 980,
-    minHeight: 650,
+    ...windowSize,
+    center: process.platform === 'darwin',
+    minWidth: MINIMUM_WINDOW_SIZE.width,
+    minHeight: MINIMUM_WINDOW_SIZE.height,
     icon: assetPath(process.platform === 'win32' ? 'icon.ico' : 'app-icon.png'),
     backgroundColor: '#f7f8fa',
     webPreferences: {
@@ -86,6 +88,7 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      zoomFactor: appZoomPercent(settings.appZoomPercent) / 100,
       // Keep Chromium's docked developer-tools pane out of production. If it is
       // opened accidentally it reduces the renderer viewport and can look like
       // a large blank block covering the lower half of the app.
@@ -102,11 +105,32 @@ async function createWindow() {
   else await mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
 }
 
+function getWindowPreferences() {
+  const settings = database.getState().settings
+  const defaultSize = resolveWindowSize(settings, process.platform, screen.getPrimaryDisplay().workAreaSize)
+  const [currentWidth, currentHeight] = mainWindow && !mainWindow.isDestroyed()
+    ? mainWindow.getSize()
+    : [defaultSize.width, defaultSize.height]
+  return {
+    platform: process.platform,
+    currentWidth,
+    currentHeight,
+    defaultWidth: defaultSize.width,
+    defaultHeight: defaultSize.height,
+    zoomPercent: appZoomPercent(settings.appZoomPercent)
+  }
+}
+
 function createTray() {
   if (tray) return
-  const traySize = usesMacApplicationMenu() ? 18 : 20
-  const trayImage = nativeImage.createFromPath(assetPath('app-icon.png')).resize({ width: traySize, height: traySize })
-  if (usesMacApplicationMenu()) trayImage.setTemplateImage(true)
+  const isMac = usesMacApplicationMenu()
+  // macOS template images use the alpha channel as the complete silhouette. The
+  // normal artwork includes a dark outline, so using it here makes the menu-bar
+  // glyph much heavier than neighboring icons. A dedicated outline-free 1x/2x
+  // template pair preserves the regular Windows tray icon unchanged.
+  const sourceImage = nativeImage.createFromPath(assetPath(isMac ? 'tray-iconTemplate.png' : 'app-icon.png'))
+  const trayImage = isMac ? sourceImage : sourceImage.resize({ width: 20, height: 20 })
+  if (isMac) trayImage.setTemplateImage(true)
   tray = new Tray(trayImage)
   tray.setToolTip('Daily Routine')
   updateTrayMenu()
@@ -261,9 +285,25 @@ ipcMain.handle('db:resolve-detected', (_e, value) => database.resolveDetected(va
 ipcMain.handle('db:save-setting', (_e, value) => {
   const state = database.saveSetting(value)
   if (value?.key === 'language') updateTrayMenu(state.settings.language)
+  if (value?.key === 'appZoomPercent' && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.setZoomFactor(appZoomPercent(value.value) / 100)
+  }
   return state
 })
-ipcMain.handle('db:reset-demo', () => database.resetDemo())
+ipcMain.handle('window:get-preferences', () => getWindowPreferences())
+ipcMain.handle('window:preview-zoom', (_e, value: number) => {
+  const zoomPercent = appZoomPercent(value)
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomFactor(zoomPercent / 100)
+  return zoomPercent
+})
+ipcMain.handle('db:reset-demo', () => {
+  const state = database.resetDemo()
+  updateTrayMenu(state.settings.language)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.setZoomFactor(appZoomPercent(state.settings.appZoomPercent) / 100)
+  }
+  return state
+})
 ipcMain.handle('db:get-path', () => database.filePath)
 ipcMain.handle('brightspace:status', (_e, baseUrl: string) => brightspace.getStatus(baseUrl))
 ipcMain.handle('brightspace:connect', (_e, baseUrl: string) => brightspace.connect(baseUrl))

@@ -31,6 +31,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "0.1.80",
     "@types/luxon": "^3.4.2",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.18",
@@ -65,6 +66,14 @@
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "build/tray-iconTemplate.png",
+        "to": "tray-iconTemplate.png"
+      },
+      {
+        "from": "build/tray-iconTemplate@2x.png",
+        "to": "tray-iconTemplate@2x.png"
       },
       {
         "from": "node_modules/@tesseract.js-data/eng/4.0.0",

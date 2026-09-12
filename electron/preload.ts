@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('dailyRoutine', {
   saveDetected: (item: unknown) => ipcRenderer.invoke('db:save-detected', item),
   resolveDetected: (payload: unknown) => ipcRenderer.invoke('db:resolve-detected', payload),
   saveSetting: (payload: unknown) => ipcRenderer.invoke('db:save-setting', payload),
+  getWindowPreferences: () => ipcRenderer.invoke('window:get-preferences'),
+  previewWindowZoom: (value: number) => ipcRenderer.invoke('window:preview-zoom', value),
   resetDemo: () => ipcRenderer.invoke('db:reset-demo'),
   chooseSyllabus: () => ipcRenderer.invoke('file:choose-syllabus'),
   openPath: (path: string) => ipcRenderer.invoke('file:open-path', path),

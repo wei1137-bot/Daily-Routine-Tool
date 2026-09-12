@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DatabaseService, syllabusSourcePriority } from './database'
+import { brightspaceImportStatus, DatabaseService, syllabusSourcePriority } from './database'
 import { parseSyllabus } from './syllabus-parser'
 
 const temporaryDirectories: string[] = []
@@ -14,6 +14,9 @@ describe('syllabus source safety', () => {
     )
     expect(syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus:short')).toBe(
       syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus:long')
+    )
+    expect(syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus-v2:stable')).toBeGreaterThan(
+      syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus:layout-dependent')
     )
   })
 
@@ -42,6 +45,84 @@ describe('syllabus source safety', () => {
 
     expect(database.getState().syllabi.find((item) => item.courseId === 'brightspace-course-1644209')?.rawText)
       .toBe(currentText)
+  })
+
+  it('replaces a longer layout-dependent capture with the deterministic scanner output', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-syllabus-v2-'))
+    temporaryDirectories.push(directory)
+    const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
+    const course = {
+      id:1631417, code:'CS 240', name:'Fall 2026 CS 24000 - PWL - Merge',
+      isActive:true, startDate:null, endDate:null
+    }
+    const payload = (syllabus: ReturnType<typeof parseSyllabus>) => ({
+      baseUrl:'https://purdue.brightspace.com', courses:[course], items:[], syllabi:[syllabus],
+      warnings:[], excludedCourseIds:[],
+      stats:{ enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:1 }
+    })
+    database.importBrightspace(payload(parseSyllabus({
+      courseId:course.id, courseName:course.name, timezone:'America/Indiana/Indianapolis',
+      sourceKind:'simple-syllabus', text:`Layout-wrapped capture\n${'duplicated navigation '.repeat(100)}`
+    })))
+    const stableText = 'Course Description\nDeterministic structured capture.'
+    database.importBrightspace(payload(parseSyllabus({
+      courseId:course.id, courseName:course.name, timezone:'America/Indiana/Indianapolis',
+      sourceKind:'simple-syllabus-v2', text:stableText
+    })))
+
+    expect(database.getState().syllabi.find((item) => item.courseId === 'brightspace-course-1631417')?.rawText)
+      .toBe(stableText)
+  })
+})
+
+describe('initial Brightspace completion status', () => {
+  it('defaults only unknown overdue items to done during the first course import', () => {
+    expect(brightspaceImportStatus('unknown', '2020-01-01T00:00:00Z', true, Date.parse('2026-01-01T00:00:00Z')))
+      .toEqual({ status:'done', authoritative:false })
+    expect(brightspaceImportStatus('unknown', '2099-01-01T00:00:00Z', true, Date.parse('2026-01-01T00:00:00Z')))
+      .toEqual({ authoritative:false })
+    expect(brightspaceImportStatus('incomplete', '2020-01-01T00:00:00Z', true))
+      .toEqual({ status:'not_done', authoritative:true })
+    expect(brightspaceImportStatus('complete', '2020-01-01T00:00:00Z', true))
+      .toEqual({ status:'done', authoritative:true })
+  })
+
+  it('applies the fallback once per course and later lets known status correct it', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-initial-status-'))
+    temporaryDirectories.push(directory)
+    const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
+    const course = {
+      id:1638976, code:'MA 375', name:'Fall 2026 MA 37500-375 LEC',
+      isActive:true, startDate:null, endDate:null
+    }
+    const stats = { enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:0 }
+    const item = (id: number, title: string, dueDate: string, completionStatus: 'complete' | 'incomplete' | 'unknown') => ({
+      id, courseId:course.id, title, kind:'assignment' as const, dueDate,
+      url:`https://example.test/${id}`, completionStatus
+    })
+    const payload = (items: ReturnType<typeof item>[]) => ({
+      baseUrl:'https://purdue.brightspace.com', courses:[course], items, syllabi:[],
+      warnings:[], excludedCourseIds:[], stats
+    })
+
+    let state = database.importBrightspace(payload([
+      item(1, 'Unknown old task', '2020-01-01T00:00:00Z', 'unknown'),
+      item(2, 'Homework 1', '2020-01-02T00:00:00Z', 'incomplete'),
+      item(3, 'Homework 2', '2020-01-03T00:00:00Z', 'complete'),
+      item(4, 'Future task', '2099-01-01T00:00:00Z', 'unknown')
+    ])).state
+    let statuses = Object.fromEntries(state.events.map((event) => [event.title, event.status]))
+    expect(statuses).toMatchObject({
+      'Unknown old task':'done', 'Homework 1':'not_done', 'Homework 2':'done', 'Future task':'not_done'
+    })
+
+    state = database.importBrightspace(payload([
+      item(1, 'Unknown old task', '2020-01-01T00:00:00Z', 'incomplete'),
+      item(5, 'Later discovered old task', '2020-01-04T00:00:00Z', 'unknown')
+    ])).state
+    statuses = Object.fromEntries(state.events.map((event) => [event.title, event.status]))
+    expect(statuses['Unknown old task']).toBe('not_done')
+    expect(statuses['Later discovered old task']).toBe('not_done')
   })
 })
 

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Cloud, Database, FileText, GraduationCap, KeyRound, Link2, Loader2, Mail, RefreshCw, RotateCcw, ShieldCheck, Unplug } from 'lucide-react'
+import { Cloud, Database, FileText, GraduationCap, KeyRound, Link2, Loader2, Mail, Monitor, RefreshCw, RotateCcw, ShieldCheck, Type, Unplug } from 'lucide-react'
 import type { AppState, BrightspaceStatus, Course, GradescopeAutoLoginStatus, GradescopeStatus } from '../domain/types'
 import { useI18n } from '../i18n'
 import { Modal } from '../components/Modal'
 
 const DEFAULT_BRIGHTSPACE_URL = 'https://purdue.brightspace.com'
 const accentColors = ['#536faf','#68718f','#547b76','#806e86','#89745f']
+const normalizedZoom = (value?: string) => value === undefined || value === '' ? 100
+  : Math.min(130, Math.max(80, Number.isFinite(Number(value)) ? Math.round(Number(value)) : 100))
 
 export function SettingsPage({ courses, settings, onSaveSetting, onStateChange, onReset }: {
   courses: Course[]
@@ -33,11 +35,24 @@ export function SettingsPage({ courses, settings, onSaveSetting, onStateChange, 
   const [credentialPassword, setCredentialPassword] = useState('')
   const [credentialBusy, setCredentialBusy] = useState(false)
   const [credentialError, setCredentialError] = useState<string>()
+  const [windowPreferences, setWindowPreferences] = useState<Awaited<ReturnType<typeof window.dailyRoutine.getWindowPreferences>>>()
+  const [editingWindowSize, setEditingWindowSize] = useState(false)
+  const [savingWindowSize, setSavingWindowSize] = useState(false)
+  const [zoomPercent, setZoomPercent] = useState(() => normalizedZoom(settings.appZoomPercent))
 
   useEffect(() => { window.dailyRoutine.getDataPath().then(setDataPath) }, [])
   useEffect(() => { window.dailyRoutine.getBrightspaceLogPath().then(setLogPath) }, [])
   useEffect(() => { window.dailyRoutine.getGradescopeLogPath().then(setGradescopeLogPath) }, [])
   useEffect(() => { window.dailyRoutine.getGradescopeAutoLoginStatus().then(setAutoLoginStatus).catch((error) => setGradescopeError(errorMessage(error))) }, [])
+  useEffect(() => { window.dailyRoutine.getWindowPreferences().then(setWindowPreferences) }, [])
+  useEffect(() => { setZoomPercent(normalizedZoom(settings.appZoomPercent)) }, [settings.appZoomPercent])
+  useEffect(() => {
+    if (!editingWindowSize) return
+    const refresh = () => { void window.dailyRoutine.getWindowPreferences().then(setWindowPreferences) }
+    refresh()
+    const timer = window.setInterval(refresh, 250)
+    return () => window.clearInterval(timer)
+  }, [editingWindowSize])
   useEffect(() => {
     let active = true
     window.dailyRoutine.getBrightspaceStatus(baseUrl)
@@ -54,6 +69,33 @@ export function SettingsPage({ courses, settings, onSaveSetting, onStateChange, 
   }, [])
 
   const saveUrl = async () => { await onSaveSetting('brightspaceBaseUrl', baseUrl.trim()) }
+
+  const startWindowSizeEdit = async () => {
+    setWindowPreferences(await window.dailyRoutine.getWindowPreferences())
+    setEditingWindowSize(true)
+  }
+
+  const finishWindowSizeEdit = async () => {
+    setSavingWindowSize(true)
+    try {
+      const current = await window.dailyRoutine.getWindowPreferences()
+      await onSaveSetting('defaultWindowWidth', String(current.currentWidth))
+      await onSaveSetting('defaultWindowHeight', String(current.currentHeight))
+      setWindowPreferences({ ...current, defaultWidth:current.currentWidth, defaultHeight:current.currentHeight })
+      setEditingWindowSize(false)
+    } finally { setSavingWindowSize(false) }
+  }
+
+  const previewZoom = (value: number) => {
+    setZoomPercent(value)
+    void window.dailyRoutine.previewWindowZoom(value)
+  }
+
+  const saveZoom = async (value: number) => {
+    const normalized = await window.dailyRoutine.previewWindowZoom(value)
+    setZoomPercent(normalized)
+    if (settings.appZoomPercent !== String(normalized)) await onSaveSetting('appZoomPercent', String(normalized))
+  }
 
   const applySync = async () => {
     const result = await window.dailyRoutine.syncBrightspace(baseUrl)
@@ -165,6 +207,13 @@ export function SettingsPage({ courses, settings, onSaveSetting, onStateChange, 
       <section className="settings-section"><div className="settings-icon"><ShieldCheck size={20}/></div><div className="settings-content"><h2>{t('general')}</h2><p>{t('generalHint')}</p>
         <label>{t('defaultTimezone')}<select value={settings.defaultTimezone ?? 'America/Indiana/Indianapolis'} onChange={(e) => void onSaveSetting('defaultTimezone',e.target.value)}><option>America/Indiana/Indianapolis</option><option>America/New_York</option><option>America/Chicago</option><option>America/Denver</option><option>America/Los_Angeles</option><option>Asia/Shanghai</option><option>UTC</option></select></label>
         <label>{t('language')}<select value={language} onChange={(event) => void onSaveSetting('language',event.target.value)}><option value="en">{t('english')}</option><option value="zh">{t('chinese')}</option></select></label>
+        <div className="display-settings"><h3>{t('displaySettings')}</h3>
+          <div className={`display-setting-row ${editingWindowSize ? 'editing' : ''}`}><Monitor size={17}/><div><strong>{t('defaultWindowSize')}</strong><span>{windowPreferences ? `${editingWindowSize ? windowPreferences.currentWidth : windowPreferences.defaultWidth} × ${editingWindowSize ? windowPreferences.currentHeight : windowPreferences.defaultHeight}` : '—'}</span></div>
+            <button className={`button ${editingWindowSize ? 'primary' : 'secondary'}`} disabled={savingWindowSize} onClick={() => void (editingWindowSize ? finishWindowSizeEdit() : startWindowSizeEdit())}>{editingWindowSize ? t('finishWindowSize') : t('editWindowSize')}</button>
+          </div>
+          {editingWindowSize && <p className="window-size-edit-hint">{t('resizeWindowHint')}</p>}
+          <label className="font-size-setting"><Type size={17}/><div><strong>{t('fontSize')}</strong><span>{t('fontSizeHint')}</span></div><div className="font-size-control"><input type="range" min="80" max="130" step="5" value={zoomPercent} aria-label={t('fontSize')} onChange={(event) => previewZoom(Number(event.target.value))} onPointerUp={(event) => void saveZoom(Number(event.currentTarget.value))} onKeyUp={(event) => void saveZoom(Number(event.currentTarget.value))} onBlur={(event) => void saveZoom(Number(event.currentTarget.value))}/><output>{zoomPercent}%</output></div></label>
+        </div>
         <fieldset className="settings-accent-picker"><legend>{t('appAccent')}</legend><div className="color-options">{accentColors.map((color) => <button type="button" key={color} className={`color-choice ${settings.appAccentColor === color || (!settings.appAccentColor && color === accentColors[0]) ? 'selected' : ''}`} style={{background:color}} aria-label={color} onClick={() => void onSaveSetting('appAccentColor',color)}/>)}<label className="custom-color-control" title={t('custom')}><span className="custom-color-swatch" style={settings.appAccentColor ? {background:settings.appAccentColor} : undefined}/><span>{t('custom')}</span><input className="custom-color-input" type="color" aria-label={t('custom')} value={/^#[0-9a-f]{6}$/i.test(settings.appAccentColor ?? '') ? settings.appAccentColor : '#536faf'} onChange={(event) => void onSaveSetting('appAccentColor',event.target.value)}/></label></div></fieldset>
         <label className="switch-label setting-toggle"><input type="checkbox" checked={settings.hideCompleted === 'true'} onChange={(e) => void onSaveSetting('hideCompleted',e.target.checked)}/><span className="switch"/>{t('hideCompletedDefault')}</label></div></section>
       <section className="settings-section"><div className="settings-icon"><Cloud size={20}/></div><div className="settings-content"><h2>Brightspace</h2><p>{t('brightspaceHint')}</p>

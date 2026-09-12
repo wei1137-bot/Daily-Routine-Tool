@@ -17,6 +17,15 @@ declare global {
       saveDetected(item: DetectedEvent): Promise<AppState>
       resolveDetected(payload: { id: string; action: 'confirm' | 'ignored'; event?: AcademicEvent }): Promise<AppState>
       saveSetting(payload: { key: string; value: string | boolean }): Promise<AppState>
+      getWindowPreferences(): Promise<{
+        platform: string
+        currentWidth: number
+        currentHeight: number
+        defaultWidth: number
+        defaultHeight: number
+        zoomPercent: number
+      }>
+      previewWindowZoom(value: number): Promise<number>
       resetDemo(): Promise<AppState>
       chooseSyllabus(): Promise<{ filePath: string; fileName: string } | null>
       openPath(path: string): Promise<string>

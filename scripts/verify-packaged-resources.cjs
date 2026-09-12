@@ -23,7 +23,11 @@ module.exports = async function verifyPackagedResources(context) {
   requireFile(path.join(resources, 'app-icon.png'), 'runtime icon')
   requireFile(path.join(resources, 'tessdata', 'eng.traineddata.gz'), 'Tesseract English language data')
 
-  if (context.electronPlatformName === 'darwin') requireFile(path.join(resources, 'icon.icns'), 'macOS application icon')
+  if (context.electronPlatformName === 'darwin') {
+    requireFile(path.join(resources, 'icon.icns'), 'macOS application icon')
+    requireFile(path.join(resources, 'tray-iconTemplate.png'), 'macOS menu-bar template icon')
+    requireFile(path.join(resources, 'tray-iconTemplate@2x.png'), 'macOS Retina menu-bar template icon')
+  }
   if (context.electronPlatformName === 'win32') requireFile(path.join(resources, 'icon.ico'), 'Windows application icon')
 
   const entries = new Set(asar.listPackage(archive).map((entry) => entry.replace(/^[/\\]/, '').replace(/\\/g, '/')))

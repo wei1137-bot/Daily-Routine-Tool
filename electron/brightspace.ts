@@ -27,7 +27,10 @@ export interface BrightspaceItemPayload {
   dueDate: string | null
   url: string
   externalId?: string
+  completionStatus?: BrightspaceCompletionStatus
 }
+
+export type BrightspaceCompletionStatus = 'complete' | 'incomplete' | 'unknown'
 
 export interface BrightspacePayload {
   baseUrl: string
@@ -61,6 +64,11 @@ class BrightspaceAuthRequiredError extends Error {
 
 export class BrightspaceService {
   private loginWindow: BrowserWindow | null = null
+  private activeSimpleSyllabusCaptures = 0
+  private readonly simpleSyllabusWaiters: Array<() => void> = []
+  private activeCompletionLookups = 0
+  private readonly completionLookupWaiters: Array<() => void> = []
+  private readonly completionStatusCache = new Map<string, Promise<BrightspaceCompletionStatus>>()
 
   constructor(readonly logPath: string, private readonly syllabusDirectory: string) {
     this.writeLog('INFO', 'Brightspace connector initialized')
@@ -118,6 +126,8 @@ export class BrightspaceService {
       const { csrfToken } = await this.captureAuthenticatedContext(baseUrl, false, 30_000)
       const browserSession = this.browserSession()
       const token = await this.mintToken(browserSession, baseUrl, csrfToken)
+      this.completionStatusCache.clear()
+      const currentUserId = await this.fetchCurrentUserId(browserSession, baseUrl, token)
       const enrolledCourses = await this.fetchCourses(browserSession, baseUrl, token)
       const academicCourses = enrolledCourses.filter((course) => Boolean(academicCourseCode(course.code, course.name)))
       const nonAcademicCourses = enrolledCourses.filter((course) => !academicCourseCode(course.code, course.name))
@@ -143,9 +153,9 @@ export class BrightspaceService {
 
       await Promise.all(current.map(async (course) => {
         const [assignments, quizzes, calendarEvents] = await Promise.allSettled([
-          this.fetchAssignments(browserSession, baseUrl, token, course.id),
-          this.fetchQuizzes(browserSession, baseUrl, token, course.id),
-          this.fetchCalendarEvents(browserSession, baseUrl, token, course.id)
+          this.fetchAssignments(browserSession, baseUrl, token, course.id, currentUserId),
+          this.fetchQuizzes(browserSession, baseUrl, token, course.id, currentUserId),
+          this.fetchCalendarEvents(browserSession, baseUrl, token, course.id, currentUserId)
         ])
         const assignmentError = assignments.status === 'rejected' ? errorMessage(assignments.reason) : null
         const quizError = quizzes.status === 'rejected' ? errorMessage(quizzes.reason) : null
@@ -172,6 +182,7 @@ export class BrightspaceService {
             syllabi.push(syllabus)
             this.writeLog('INFO', 'Syllabus read successfully', {
               courseId: course.id, course: course.name, file: syllabus.fileName,
+              source: syllabus.sourceKind, fingerprint: syllabus.sourceExternalId.split(':').at(-1),
               characters: syllabus.rawText.length, gradingItems: syllabus.gradingItems.length,
               examEvents: syllabus.events.length
             })
@@ -211,11 +222,17 @@ export class BrightspaceService {
         inaccessibleCourses,
         syllabiFound: syllabi.length
       }
+      const allItems = groups.flat()
+      const completionCounts = allItems.reduce((counts, item) => {
+        counts[item.completionStatus ?? 'unknown'] += 1
+        return counts
+      }, { complete: 0, incomplete: 0, unknown: 0 })
       this.writeLog('INFO', 'Sync completed', {
-        ...stats, importedCourses: accessibleCourses.length, items: groups.flat().length, partialWarnings: warnings.length
+        ...stats, importedCourses: accessibleCourses.length, items: allItems.length,
+        completionCounts, partialWarnings: warnings.length
       })
       return {
-        baseUrl, courses: accessibleCourses, items: groups.flat(), syllabi, warnings, stats,
+        baseUrl, courses: accessibleCourses, items: allItems, syllabi, warnings, stats,
         excludedCourseIds: [
           ...skipped.map((entry) => entry.course.id),
           ...nonAcademicCourses.map((course) => course.id),
@@ -419,31 +436,57 @@ export class BrightspaceService {
     })
   }
 
-  private async fetchAssignments(browserSession: Session, baseUrl: string, token: string, courseId: number): Promise<BrightspaceItemPayload[]> {
+  private async fetchCurrentUserId(browserSession: Session, baseUrl: string, token: string) {
+    try {
+      const payload = await this.bearerJson(browserSession, `${baseUrl}/d2l/api/lp/${LP_VERSION}/users/whoami`, token)
+      const identifier = Number(payload?.Identifier)
+      return Number.isFinite(identifier) && identifier > 0 ? identifier : null
+    } catch (error) {
+      if (error instanceof BrightspaceAuthRequiredError) throw error
+      this.writeLog('INFO', 'Current Brightspace user id is unavailable; some completion states will remain unknown', {
+        error: errorMessage(error)
+      })
+      return null
+    }
+  }
+
+  private async fetchAssignments(browserSession: Session, baseUrl: string, token: string, courseId: number, userId: number | null): Promise<BrightspaceItemPayload[]> {
     const payload = await this.bearerJson(browserSession,
       `${baseUrl}/d2l/api/le/${LE_VERSION}/${courseId}/dropbox/folders/`, token)
     if (!Array.isArray(payload)) throw new Error('返回值不是作业列表')
-    return payload.flatMap((folder: any): BrightspaceItemPayload[] => {
-      if (typeof folder?.Id !== 'number' || typeof folder?.Name !== 'string') return []
-      return [{ id: folder.Id, courseId, title: folder.Name, kind: 'assignment',
-        dueDate: validIso(folder.DueDate),
-        url: `${baseUrl}/d2l/lms/dropbox/user/folder_submit_files.d2l?db=${folder.Id}&grpid=0&ou=${courseId}` }]
-    })
+    const folders = payload.filter((folder: any) => typeof folder?.Id === 'number' && typeof folder?.Name === 'string')
+    return Promise.all(folders.map(async (folder: any): Promise<BrightspaceItemPayload> => {
+      const dueDate = validIso(folder.DueDate)
+      const completionStatus = await this.completionForPastDueItem(
+        browserSession, baseUrl, token, courseId, userId, dueDate,
+        'D2L.LE.Dropbox.Dropbox', folder.Id
+      )
+      return {
+        id: folder.Id, courseId, title: folder.Name, kind: 'assignment', dueDate, completionStatus,
+        url: `${baseUrl}/d2l/lms/dropbox/user/folder_submit_files.d2l?db=${folder.Id}&grpid=0&ou=${courseId}`
+      }
+    }))
   }
 
-  private async fetchQuizzes(browserSession: Session, baseUrl: string, token: string, courseId: number): Promise<BrightspaceItemPayload[]> {
+  private async fetchQuizzes(browserSession: Session, baseUrl: string, token: string, courseId: number, userId: number | null): Promise<BrightspaceItemPayload[]> {
     const payload = await this.bearerJson(browserSession,
       `${baseUrl}/d2l/api/le/${LE_VERSION}/${courseId}/quizzes/`, token)
     if (!Array.isArray(payload?.Objects)) throw new Error('返回值不是测验列表')
-    return payload.Objects.flatMap((quiz: any): BrightspaceItemPayload[] => {
-      if (typeof quiz?.QuizId !== 'number' || typeof quiz?.Name !== 'string') return []
-      return [{ id: quiz.QuizId, courseId, title: quiz.Name, kind: 'quiz',
-        dueDate: validIso(quiz.DueDate),
-        url: `${baseUrl}/d2l/lms/quizzing/user/quiz_summary.d2l?qi=${quiz.QuizId}&ou=${courseId}` }]
-    })
+    const quizzes = payload.Objects.filter((quiz: any) => typeof quiz?.QuizId === 'number' && typeof quiz?.Name === 'string')
+    return Promise.all(quizzes.map(async (quiz: any): Promise<BrightspaceItemPayload> => {
+      const dueDate = validIso(quiz.DueDate)
+      const completionStatus = await this.completionForPastDueItem(
+        browserSession, baseUrl, token, courseId, userId, dueDate,
+        'D2L.LE.Quizzing.Quiz', quiz.QuizId
+      )
+      return {
+        id: quiz.QuizId, courseId, title: quiz.Name, kind: 'quiz', dueDate, completionStatus,
+        url: `${baseUrl}/d2l/lms/quizzing/user/quiz_summary.d2l?qi=${quiz.QuizId}&ou=${courseId}`
+      }
+    }))
   }
 
-  private async fetchCalendarEvents(browserSession: Session, baseUrl: string, token: string, courseId: number): Promise<BrightspaceItemPayload[]> {
+  private async fetchCalendarEvents(browserSession: Session, baseUrl: string, token: string, courseId: number, userId: number | null): Promise<BrightspaceItemPayload[]> {
     const startDateTime = apiUtcDate(new Date(Date.now() - 60 * 24 * 60 * 60 * 1000))
     const endDateTime = apiUtcDate(new Date(Date.now() + 370 * 24 * 60 * 60 * 1000))
     const query = new URLSearchParams({ association: '1', eventType: '6', startDateTime, endDateTime })
@@ -454,21 +497,88 @@ export class BrightspaceService {
       : Array.isArray(payload?.Objects) ? payload.Objects
       : null
     if (!rows) throw new Error(`返回值不是日历事件列表（字段：${Object.keys(payload ?? {}).slice(0, 6).join(', ') || 'none'}）`)
-    return rows.flatMap((event: any): BrightspaceItemPayload[] => {
-      if (typeof event?.CalendarEventId !== 'number' || typeof event?.Title !== 'string') return []
+    const events = rows.filter((event: any) => typeof event?.CalendarEventId === 'number' && typeof event?.Title === 'string')
+    const resolved = await Promise.all(events.map(async (event: any): Promise<BrightspaceItemPayload | null> => {
       const dueDate = validIso(event.StartDateTime)
-      if (!dueDate) return []
+      if (!dueDate) return null
       const path = typeof event.CalendarEventViewUrl === 'string' ? event.CalendarEventViewUrl : ''
-      return [{
+      const associatedType = typeof event?.AssociatedEntity?.AssociatedEntityType === 'string'
+        ? event.AssociatedEntity.AssociatedEntityType : ''
+      const associatedId = Number(event?.AssociatedEntity?.AssociatedEntityId)
+      const completionStatus = Number.isFinite(associatedId) && associatedType
+        ? await this.completionForPastDueItem(browserSession, baseUrl, token, courseId, userId, dueDate, associatedType, associatedId)
+        : 'unknown'
+      return {
         id: event.CalendarEventId,
         externalId: `calendar-${event.CalendarEventId}`,
         courseId,
         title: cleanCalendarTitle(event.Title),
         kind: calendarEventKind(event),
         dueDate,
+        completionStatus,
         url: path ? new URL(path, baseUrl).toString() : `${baseUrl}/d2l/le/calendar/${courseId}`
-      }]
+      }
+    }))
+    return resolved.filter((item): item is BrightspaceItemPayload => item !== null)
+  }
+
+  private completionForPastDueItem(
+    browserSession: Session,
+    baseUrl: string,
+    token: string,
+    courseId: number,
+    userId: number | null,
+    dueDate: string | null,
+    associatedType: string,
+    associatedId: number
+  ): Promise<BrightspaceCompletionStatus> {
+    const dueTimestamp = dueDate ? Date.parse(dueDate) : Number.NaN
+    if (!Number.isFinite(dueTimestamp) || dueTimestamp >= Date.now()) return Promise.resolve('unknown')
+
+    const cacheKey = `${courseId}:${associatedType}:${associatedId}:${userId ?? 'self'}`
+    const cached = this.completionStatusCache.get(cacheKey)
+    if (cached) return cached
+    const lookup = this.withCompletionLookupSlot(async () => {
+      try {
+        if (/\.Dropbox$/.test(associatedType)) {
+          const payload = await this.bearerJson(browserSession,
+            `${baseUrl}/d2l/api/le/${LE_VERSION}/${courseId}/dropbox/folders/${associatedId}/submissions/mysubmissions/`, token)
+          return assignmentCompletionStatus(payload)
+        }
+        if (/\.Quiz$/.test(associatedType) && userId) {
+          const query = new URLSearchParams({ userId: String(userId) })
+          const payload = await this.bearerJson(browserSession,
+            `${baseUrl}/d2l/api/le/${LE_VERSION}/${courseId}/quizzes/${associatedId}/attempts/?${query}`, token)
+          return quizCompletionStatus(payload, userId)
+        }
+        if (/\.TopicCO$/.test(associatedType) && userId) {
+          const payload = await this.bearerJson(browserSession,
+            `${baseUrl}/d2l/api/le/${LE_VERSION}/${courseId}/content/topics/${associatedId}/completions/users/${userId}`, token)
+          return contentCompletionStatus(payload, userId)
+        }
+        return 'unknown'
+      } catch (error) {
+        if (error instanceof BrightspaceAuthRequiredError) throw error
+        this.writeLog('INFO', 'Brightspace completion status unavailable', {
+          courseId, associatedType, associatedId, error: errorMessage(error)
+        })
+        return 'unknown'
+      }
     })
+    this.completionStatusCache.set(cacheKey, lookup)
+    return lookup
+  }
+
+  private async withCompletionLookupSlot<T>(work: () => Promise<T>) {
+    if (this.activeCompletionLookups < 6) this.activeCompletionLookups += 1
+    else await new Promise<void>((resolve) => this.completionLookupWaiters.push(resolve))
+    try {
+      return await work()
+    } finally {
+      const next = this.completionLookupWaiters.shift()
+      if (next) next()
+      else this.activeCompletionLookups -= 1
+    }
   }
 
   private async fetchSyllabus(browserSession: Session, baseUrl: string, token: string, course: BrightspaceCoursePayload, timezone: string) {
@@ -596,6 +706,15 @@ export class BrightspaceService {
 
   private async fetchPurdueSimpleSyllabus(baseUrl: string, course: BrightspaceCoursePayload, timezone: string) {
     if (new URL(baseUrl).hostname.toLowerCase() !== 'purdue.brightspace.com') return null
+    await this.acquireSimpleSyllabusCapture()
+    try {
+      return await this.capturePurdueSimpleSyllabus(baseUrl, course, timezone)
+    } finally {
+      this.releaseSimpleSyllabusCapture()
+    }
+  }
+
+  private async capturePurdueSimpleSyllabus(baseUrl: string, course: BrightspaceCoursePayload, timezone: string) {
     const launchUrl = buildPurdueSimpleSyllabusUrl(baseUrl, course.id)
     const win = new BrowserWindow({
       width: 1100,
@@ -620,19 +739,7 @@ export class BrightspaceService {
           }
         })
         if (frame) {
-          const page = await frame.executeJavaScript(`(() => ({
-            title: document.title,
-            text: document.body?.innerText || '',
-            ready: document.readyState,
-            loading: Boolean(document.querySelector('[aria-busy="true"], .loading, .spinner, [class*="skeleton"]')),
-            scroll: (() => {
-              window.scrollTo(0, document.documentElement?.scrollHeight || document.body?.scrollHeight || 0)
-              for (const element of document.querySelectorAll('*')) {
-                if (element.scrollHeight > element.clientHeight + 100) element.scrollTop = element.scrollHeight
-              }
-              return document.documentElement?.scrollHeight || document.body?.scrollHeight || 0
-            })()
-          }))()`, true).catch(() => null) as { title: string; text: string } | null
+          const page = await frame.executeJavaScript(SIMPLE_SYLLABUS_CAPTURE_SCRIPT, true).catch(() => null) as SimpleSyllabusPageCapture | null
           if (page?.text && page.text.length > 500) {
             const observedAt = Date.now()
             if (!firstReadableAt) firstReadableAt = observedAt
@@ -640,9 +747,13 @@ export class BrightspaceService {
               bestPage = { title: page.title, text: page.text }
               lastGrowthAt = observedAt
             }
-            // Simple Syllabus fills long documents after the initial page load. Waiting for both
-            // a minimum observation window and a stable text length prevents saving that shell.
-            if (observedAt - firstReadableAt >= 8_000 && observedAt - lastGrowthAt >= 2_000) break
+            if (simpleSyllabusCaptureReady({
+              firstReadableAt,
+              lastGrowthAt,
+              observedAt,
+              completedPasses: page.completedPasses,
+              loading: page.loading
+            })) break
           }
         }
         await new Promise((resolve) => setTimeout(resolve, 500))
@@ -659,7 +770,7 @@ export class BrightspaceService {
           fileName: null,
           timezone,
           courseName: course.name,
-          sourceKind: 'simple-syllabus'
+          sourceKind: 'simple-syllabus-v2'
         })
       }
       this.writeLog('INFO', 'No published Purdue Simple Syllabus found', { courseId: course.id, course: course.name })
@@ -672,6 +783,20 @@ export class BrightspaceService {
     } finally {
       if (!win.isDestroyed()) win.destroy()
     }
+  }
+
+  private async acquireSimpleSyllabusCapture() {
+    if (this.activeSimpleSyllabusCaptures < 2) {
+      this.activeSimpleSyllabusCaptures += 1
+      return
+    }
+    await new Promise<void>((resolve) => this.simpleSyllabusWaiters.push(resolve))
+  }
+
+  private releaseSimpleSyllabusCapture() {
+    const next = this.simpleSyllabusWaiters.shift()
+    if (next) next()
+    else this.activeSimpleSyllabusCaptures -= 1
   }
 
   private async bearerJson(browserSession: Session, url: string, token: string) {
@@ -702,6 +827,129 @@ export function chooseSyllabusSource<T>(sources: { simpleSyllabus: T | null; ove
   if (sources.overviewSyllabus) return { source: 'overview' as const, syllabus: sources.overviewSyllabus }
   return null
 }
+
+export function assignmentCompletionStatus(payload: unknown): BrightspaceCompletionStatus {
+  if (!Array.isArray(payload)) return 'unknown'
+  // The current-user submissions route only returns EntityDropbox records after
+  // the learner has submitted to that folder. An empty successful response is an
+  // explicit "not submitted" result, not an unavailable status.
+  return payload.length > 0 ? 'complete' : 'incomplete'
+}
+
+export function quizCompletionStatus(payload: any, userId: number): BrightspaceCompletionStatus {
+  if (!Array.isArray(payload?.Objects)) return 'unknown'
+  const ownAttempts = payload.Objects.filter((attempt: any) => Number(attempt?.UserId) === userId)
+  return ownAttempts.some((attempt: any) => typeof attempt?.Completed === 'string' && attempt.Completed.length > 0)
+    ? 'complete' : 'incomplete'
+}
+
+export function contentCompletionStatus(payload: any, userId: number): BrightspaceCompletionStatus {
+  if (!payload || typeof payload !== 'object' || Number(payload.UserId) !== userId
+    || !Object.prototype.hasOwnProperty.call(payload, 'CompletionDate')) return 'unknown'
+  return typeof payload.CompletionDate === 'string' && payload.CompletionDate.length > 0
+    ? 'complete' : 'incomplete'
+}
+
+interface SimpleSyllabusPageCapture {
+  title: string
+  text: string
+  loading: boolean
+  completedPasses: number
+}
+
+export function simpleSyllabusCaptureReady(input: {
+  firstReadableAt: number
+  lastGrowthAt: number
+  observedAt: number
+  completedPasses: number
+  loading: boolean
+}) {
+  return input.completedPasses >= 1
+    && !input.loading
+    && input.observedAt - input.firstReadableAt >= 8_000
+    && input.observedAt - input.lastGrowthAt >= 2_000
+}
+
+// Simple Syllabus lazily fills long pages while they are scrolled. Jumping straight
+// to the bottom can leave most of the document unloaded, and innerText also inserts
+// line wraps based on platform font metrics. This browser-side scanner advances one
+// viewport at a time and serializes DOM structure instead of visual line wrapping.
+const SIMPLE_SYLLABUS_CAPTURE_SCRIPT = String.raw`(() => {
+  const blockTags = new Set([
+    'ADDRESS','ARTICLE','ASIDE','BLOCKQUOTE','DIV','DL','DT','DD','FIELDSET','FIGCAPTION','FIGURE','FOOTER',
+    'FORM','H1','H2','H3','H4','H5','H6','HEADER','HR','LI','MAIN','NAV','OL','P','PRE','SECTION','TABLE',
+    'TBODY','TD','TFOOT','TH','THEAD','TR','UL'
+  ])
+  const ignoredTags = new Set(['SCRIPT','STYLE','NOSCRIPT','SVG','PATH'])
+  const separatedInlineTags = new Set(['A','BUTTON','LABEL','SPAN'])
+  const output = []
+  const newline = () => {
+    if (output.length && output[output.length - 1] !== '\n') output.push('\n')
+  }
+  const space = () => {
+    const last = output[output.length - 1]
+    if (output.length && last !== '\n' && last !== ' ') output.push(' ')
+  }
+  const walk = (node) => {
+    if (node.nodeType === 3) {
+      const value = String(node.nodeValue || '').replace(/\s+/g, ' ')
+      if (value) output.push(value)
+      return
+    }
+    if (node.nodeType !== 1 || ignoredTags.has(node.tagName)) return
+    if (node.tagName === 'BR') { newline(); return }
+    const isBlock = blockTags.has(node.tagName)
+    const isSeparatedInline = separatedInlineTags.has(node.tagName)
+    if (isBlock) newline()
+    else if (isSeparatedInline) space()
+    for (const child of node.childNodes) walk(child)
+    if (isBlock) newline()
+    else if (isSeparatedInline) space()
+  }
+  if (document.body) walk(document.body)
+  const text = output.join('')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  const stateKey = '__dailyRoutineSyllabusScanV2'
+  const candidates = [document.scrollingElement, ...document.querySelectorAll('*')]
+    .filter((element) => {
+      if (!element || element.scrollHeight <= element.clientHeight + 100) return false
+      if (element === document.scrollingElement) return true
+      return /(?:auto|scroll|overlay)/.test(getComputedStyle(element).overflowY)
+    })
+  const target = candidates.sort((left, right) =>
+    (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight))[0]
+    || document.scrollingElement || document.documentElement
+  const state = window[stateKey] || { completedPasses: 0, initialized: false, target: null }
+  if (state.target !== target) {
+    state.target = target
+    state.completedPasses = 0
+    state.initialized = false
+  }
+  if (!state.initialized) {
+    target.scrollTop = 0
+    state.initialized = true
+  } else {
+    const maximum = Math.max(0, target.scrollHeight - target.clientHeight)
+    const step = Math.max(240, Math.floor(target.clientHeight * 0.72))
+    if (target.scrollTop >= maximum - 2) {
+      state.completedPasses += 1
+      target.scrollTop = 0
+    } else {
+      target.scrollTop = Math.min(maximum, target.scrollTop + step)
+    }
+  }
+  window[stateKey] = state
+  return {
+    title: document.title,
+    text,
+    loading: Boolean(document.querySelector('[aria-busy="true"], .loading, .spinner, [class*="skeleton"]')),
+    completedPasses: state.completedPasses
+  }
+})()`
 
 function parseJson(body: string): any {
   try { return JSON.parse(body) } catch { return null }

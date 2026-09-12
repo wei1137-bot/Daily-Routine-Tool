@@ -9,7 +9,7 @@ export interface RuntimeResourceContext {
 
 export function runtimeAssetPath(name: string, context: RuntimeResourceContext) {
   if (context.isPackaged) return path.join(context.resourcesPath, name)
-  const directory = /\.(?:ico|icns)$/i.test(name) ? 'build' : 'public'
+  const directory = /\.(?:ico|icns)$/i.test(name) || /Template(?:@2x)?\.png$/i.test(name) ? 'build' : 'public'
   return path.join(context.appRoot, directory, name)
 }
 

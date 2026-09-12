@@ -39,6 +39,9 @@ importers:
         specifier: ^7.0.0
         version: 7.0.0
     devDependencies:
+      '@napi-rs/canvas':
+        specifier: 0.1.80
+        version: 0.1.80
       '@types/luxon':
         specifier: ^3.4.2
         version: 3.7.5

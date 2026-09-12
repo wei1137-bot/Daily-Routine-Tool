@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import initSqlJs, { Database as SqlDatabase } from 'sql.js'
-import type { BrightspacePayload } from './brightspace'
+import type { BrightspaceCompletionStatus, BrightspacePayload } from './brightspace'
 import type { GradescopePayload } from './gradescope'
 import { academicCourseCode, normalizeCourseCode, normalizedCourseName } from './course-code'
 import { parseSyllabus } from './syllabus-parser'
@@ -12,10 +12,26 @@ type ParsedGradingItem = ReturnType<typeof parseSyllabus>['gradingItems'][number
 const now = () => new Date().toISOString()
 
 export function syllabusSourcePriority(sourceExternalId: string) {
-  if (/:(?:overview-attachment|content-file):/.test(sourceExternalId)) return 3
+  if (/:(?:overview-attachment|content-file):/.test(sourceExternalId)) return 4
+  if (/:simple-syllabus-v2:/.test(sourceExternalId)) return 3
   if (/:simple-syllabus:/.test(sourceExternalId)) return 2
   if (/:overview:/.test(sourceExternalId)) return 1
   return 0
+}
+
+export function brightspaceImportStatus(
+  completionStatus: BrightspaceCompletionStatus | undefined,
+  dueAt: string,
+  initialCourseImport: boolean,
+  importedAt = Date.now()
+): { status?: 'done' | 'not_done'; authoritative: boolean } {
+  if (completionStatus === 'complete') return { status:'done', authoritative:true }
+  if (completionStatus === 'incomplete') return { status:'not_done', authoritative:true }
+  const dueTimestamp = Date.parse(dueAt)
+  if (initialCourseImport && Number.isFinite(dueTimestamp) && dueTimestamp < importedAt) {
+    return { status:'done', authoritative:false }
+  }
+  return { authoritative:false }
 }
 
 export class DatabaseService {
@@ -505,6 +521,15 @@ export class DatabaseService {
     const stamp = now()
     const defaultTimezone = String(this.rows("SELECT value FROM settings WHERE key = 'defaultTimezone'")[0]?.value ?? 'America/Indiana/Indianapolis')
     const courses = this.rows('SELECT id, code FROM courses')
+    const initializedBrightspaceCourseIds = new Set<number>()
+    for (const setting of this.rows("SELECT key FROM settings WHERE key LIKE 'brightspaceCourseInitialized:%'")) {
+      const courseId = Number(String(setting.key).split(':').at(-1))
+      if (Number.isFinite(courseId)) initializedBrightspaceCourseIds.add(courseId)
+    }
+    for (const event of this.rows("SELECT source_external_id FROM events WHERE source_type = 'brightspace_api'")) {
+      const courseId = Number(String(event.source_external_id ?? '').match(/^brightspace:[^:]+:(\d+):/)?.[1])
+      if (Number.isFinite(courseId)) initializedBrightspaceCourseIds.add(courseId)
+    }
     const courseIds = new Map<number, string>()
     let coursesAdded = 0
     let coursesRemoved = 0
@@ -551,10 +576,17 @@ export class DatabaseService {
         const localCourseId = courseIds.get(item.courseId)
         if (!localCourseId) continue
         const externalId = `brightspace:${item.kind}:${item.courseId}:${item.externalId ?? item.id}`
+        const importedStatus = brightspaceImportStatus(
+          item.completionStatus,
+          item.dueDate,
+          !initializedBrightspaceCourseIds.has(item.courseId),
+          Date.parse(stamp)
+        )
         const outcome = this.upsertImportedEvent({
           id: externalId, courseId: localCourseId, title: item.title, type: item.kind,
           dueAt: item.dueDate, timezone: defaultTimezone, sourceType: 'brightspace_api',
-          sourceLabel: 'Brightspace', rawSourceText: `Brightspace API\n${item.url}`, stamp
+          sourceLabel: 'Brightspace', rawSourceText: `Brightspace API\n${item.url}`, stamp,
+          status: importedStatus.status, statusIsAuthoritative: importedStatus.authoritative
         })
         if (outcome === 'added') itemsAdded++
         else if (outcome === 'updated') itemsUpdated++
@@ -615,6 +647,11 @@ export class DatabaseService {
           if (outcome === 'added') syllabusEventsAdded++
           else if (outcome === 'updated') itemsUpdated++
         }
+      }
+      for (const remoteCourseId of courseIds.keys()) {
+        this.db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [
+          `brightspaceCourseInitialized:${remoteCourseId}`, stamp
+        ])
       }
       this.db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('brightspaceBaseUrl', ?)", [payload.baseUrl])
       this.db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('brightspaceLastSyncAt', ?)", [stamp])
@@ -736,7 +773,8 @@ export class DatabaseService {
 
   private upsertImportedEvent(input: {
     id: string; courseId: string; title: string; type: string; dueAt: string; timezone: string
-    sourceType: string; sourceLabel: string; rawSourceText: string; stamp: string; status?: string
+    sourceType: string; sourceLabel: string; rawSourceText: string; stamp: string
+    status?: string; statusIsAuthoritative?: boolean
   }): 'added' | 'updated' | 'duplicate' {
     const statusOverrideById = this.rows('SELECT status FROM event_status_overrides_v2 WHERE event_id = ? LIMIT 1', [input.id])[0]?.status
     const statusOverrideByTitle = this.rows(`SELECT status FROM event_status_overrides
@@ -747,11 +785,14 @@ export class DatabaseService {
       if (!Boolean(existing.user_edited)) {
         this.db.run(`UPDATE events SET title = ?, type = ?, due_at = ?, due_timezone = ?,
           source_label = ?, raw_source_text = ?,
-          status = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'done' THEN 'done' ELSE status END,
+          status = CASE WHEN ? IS NOT NULL THEN ?
+            WHEN ? = 1 AND ? IS NOT NULL THEN ?
+            WHEN ? = 'done' THEN 'done' ELSE status END,
           confidence = 1, updated_at = ? WHERE id = ?`, [
           input.title, input.type, input.dueAt, input.timezone, input.sourceLabel,
           input.rawSourceText, statusOverride ?? null, statusOverride ?? null,
-          input.status ?? 'not_done', input.stamp, existing.id
+          input.statusIsAuthoritative ? 1 : 0, input.status ?? null, input.status ?? null,
+          input.status ?? null, input.stamp, existing.id
         ])
         return 'updated'
       }

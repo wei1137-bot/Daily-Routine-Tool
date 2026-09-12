@@ -24,7 +24,7 @@ export interface ParsedSyllabus {
   events: Array<{ id: string; title: string; type: 'exam'; dueAt: string }>
 }
 
-export type SyllabusSourceKind = 'overview-attachment' | 'content-file' | 'simple-syllabus' | 'overview' | 'unknown'
+export type SyllabusSourceKind = 'overview-attachment' | 'content-file' | 'simple-syllabus-v2' | 'simple-syllabus' | 'overview' | 'unknown'
 
 export async function extractPdfText(data: Buffer) {
   const parser = new PDFParse({ data })

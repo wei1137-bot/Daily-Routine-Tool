@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import { DateTime } from 'luxon'
 import type { AcademicEvent, AppState, Course, EventStatus, Page, SyllabusInfo, GradingItem } from './domain/types'
@@ -25,6 +25,7 @@ export function App() {
   const [eventModal, setEventModal] = useState<AcademicEvent | 'new' | 'new-exam' | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
+  const mainShellRef = useRef<HTMLDivElement>(null)
   const language: Language = state.settings.language === 'zh' ? 'zh' : 'en'
   const accentColor = /^#[0-9a-f]{6}$/i.test(state.settings.appAccentColor ?? '') ? state.settings.appAccentColor : '#536faf'
   const defaultTimezone = state.settings.defaultTimezone ?? 'America/Indiana/Indianapolis'
@@ -33,6 +34,15 @@ export function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--primary', accentColor)
   }, [accentColor])
+
+  useLayoutEffect(() => {
+    // Every page shares this scroll container. Reset it when navigating so a long
+    // course page cannot make Settings (or another course) open halfway down.
+    if (mainShellRef.current) {
+      mainShellRef.current.scrollTop = 0
+      mainShellRef.current.scrollLeft = 0
+    }
+  }, [page, courseId])
 
   const refreshState = useCallback(async () => {
     try { setState(await window.dailyRoutine.getState()); setError(undefined) }
@@ -109,7 +119,7 @@ export function App() {
 
   return <I18nProvider language={language}><div className="app-shell">
     <Sidebar page={page} courses={state.courses} activeCourseId={activeCourse?.id} onNavigate={navigate} onAddCourse={() => setCourseModal('new')}/>
-    <div className="main-shell">
+    <div className="main-shell" ref={mainShellRef}>
       {error && <div className="error-banner"><AlertTriangle size={16}/><span>{error}</span><button onClick={() => setError(undefined)}>{tr(language,'dismiss')}</button></div>}
       {page === 'dashboard' && <Dashboard courses={state.courses} events={displayEvents} meetings={state.meetings} timezone={state.settings.defaultTimezone ?? 'America/Indiana/Indianapolis'} hideCompleted={state.settings.hideCompleted === 'true'}
         onToggleCompleted={(value) => void perform(() => window.dailyRoutine.saveSetting({ key:'hideCompleted', value }))}
