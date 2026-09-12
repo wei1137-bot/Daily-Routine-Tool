@@ -17,7 +17,7 @@ export function CourseModal({ course, onClose, onSave, onDelete, defaultTimezone
   })
   const update = (key: keyof Course, next: string) => setValue((v) => ({ ...v, [key]: next }))
   return <Modal title={course ? t('editCourse') : t('addCourse')} onClose={onClose}>
-    <form onSubmit={(e) => { e.preventDefault(); if (value.code.trim()) onSave(value) }}>
+    <form className="course-form" onSubmit={(e) => { e.preventDefault(); if (value.code.trim()) onSave(value) }}>
       <div className="form-grid two">
         <label>{t('courseCode')}<input required autoFocus value={value.code} onChange={(e) => update('code', e.target.value)} placeholder="CS 240"/></label>
         <label>{t('term')}<input value={value.term} onChange={(e) => update('term', e.target.value)} placeholder="Fall 2026"/></label>

@@ -7,6 +7,7 @@ import { academicCourseCode, normalizeCourseCode, normalizedCourseName } from '.
 import { parseSyllabus } from './syllabus-parser'
 
 type Row = Record<string, string | number | null>
+type ParsedGradingItem = ReturnType<typeof parseSyllabus>['gradingItems'][number]
 
 const now = () => new Date().toISOString()
 
@@ -159,6 +160,34 @@ export class DatabaseService {
     return result
   }
 
+  private applyParsedGradingItems(courseId: string, items: ParsedGradingItem[], replaceExisting: boolean) {
+    if (!items.length) return false
+    const mode = items.some((item) => Number(item.points) > 0) ? 'points' : 'percentage'
+    if (replaceExisting) {
+      this.db.run('DELETE FROM grading_items WHERE course_id = ?', [courseId])
+      for (const item of items) {
+        this.db.run('INSERT INTO grading_items (id, course_id, label, weight, points) VALUES (?, ?, ?, ?, ?)',
+          [item.id, courseId, item.label, item.weight, item.points])
+      }
+      this.db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [`gradingMode:${courseId}`, mode])
+      return true
+    }
+
+    // Parser v6 converted point-based syllabi to percentages. Restore the original
+    // points only when every parsed category still has a matching saved row; this
+    // preserves planner values and avoids overwriting a genuinely custom breakdown.
+    if (mode !== 'points') return false
+    const existing = this.rows('SELECT id, label FROM grading_items WHERE course_id = ?', [courseId])
+    const byLabel = new Map(existing.map((item) => [normalizeGradeLabel(String(item.label)), item]))
+    const matches = items.map((item) => ({ item, row:byLabel.get(normalizeGradeLabel(item.label)) }))
+    if (!matches.every((match) => match.row)) return false
+    for (const match of matches) {
+      this.db.run('UPDATE grading_items SET points = ? WHERE id = ?', [match.item.points, String(match.row!.id)])
+    }
+    this.db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [`gradingMode:${courseId}`, mode])
+    return true
+  }
+
   private persist() {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
     const temporaryPath = `${this.filePath}.tmp`
@@ -192,12 +221,13 @@ export class DatabaseService {
   }
 
   private reparseStoredSyllabi() {
-    const parserVersion = '6'
+    const parserVersion = '7'
     const installedVersion = String(this.rows("SELECT value FROM settings WHERE key = 'syllabusParserVersion'")[0]?.value ?? '')
     if (installedVersion === parserVersion) return
     const stored = this.rows(`SELECT s.*, c.name, c.timezone
       FROM syllabus_info s JOIN courses c ON c.id = s.course_id
       WHERE s.source_type = 'brightspace_api' AND LENGTH(COALESCE(s.raw_text, '')) > 0`)
+    if (stored.length) this.createSafetySnapshot('before-syllabus-parser-v7')
     const stamp = now()
     this.db.run('BEGIN TRANSACTION')
     try {
@@ -225,13 +255,8 @@ export class DatabaseService {
           ])
         }
         const existingGrades = this.rows('SELECT id, user_edited FROM grading_items WHERE course_id = ?', [row.course_id])
-        if (parsed.gradingItems.length && (existingGrades.length === 0 || existingGrades.every((item) => !Boolean(item.user_edited)))) {
-          this.db.run('DELETE FROM grading_items WHERE course_id = ?', [row.course_id])
-          for (const item of parsed.gradingItems) {
-            this.db.run('INSERT INTO grading_items (id, course_id, label, weight) VALUES (?, ?, ?, ?)',
-              [item.id, row.course_id, item.label, item.weight])
-          }
-        }
+        this.applyParsedGradingItems(String(row.course_id), parsed.gradingItems,
+          existingGrades.length === 0 || existingGrades.every((item) => !Boolean(item.user_edited)))
         for (const event of parsed.events) {
           this.upsertImportedEvent({
             id: event.id, courseId: String(row.course_id), title: event.title, type: event.type,
@@ -382,8 +407,11 @@ export class DatabaseService {
           item.currentMode === 'lost' ? 'lost' : 'earned'
         ])
       }
-      const displayMode = input.displayMode === 'points' ? 'points' : 'percentage'
-      this.db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [`gradingDisplayMode:${input.courseId}`, displayMode])
+      const mode = input.gradingMode === 'points' || input.displayMode === 'points' ? 'points' : 'percentage'
+      this.db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [`gradingMode:${input.courseId}`, mode])
+      const target = finiteNumber(input.target)
+      if (target === null) this.db.run('DELETE FROM settings WHERE key = ?', [`gradingTarget:${input.courseId}`])
+      else this.db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [`gradingTarget:${input.courseId}`, String(target)])
       this.db.run('COMMIT')
       this.persist()
     } catch (error) {
@@ -570,18 +598,14 @@ export class DatabaseService {
         ])
         syllabiImported++
 
-        const existingGrades = this.rows('SELECT id, label, weight, user_edited FROM grading_items WHERE course_id = ?', [localCourseId])
+        const existingGrades = this.rows('SELECT id, label, weight, points, user_edited FROM grading_items WHERE course_id = ?', [localCourseId])
         const incomingGradeTotal = syllabus.gradingItems.reduce((sum, item) => sum + Number(item.weight), 0)
-        const plausibleGrades = syllabus.gradingItems.length > 0 && incomingGradeTotal >= 90 && incomingGradeTotal <= 110
+        const incomingPointsTotal = syllabus.gradingItems.reduce((sum, item) => sum + Number(item.points), 0)
+        const plausibleGrades = syllabus.gradingItems.length > 0
+          && ((incomingGradeTotal >= 90 && incomingGradeTotal <= 110) || incomingPointsTotal > 0)
         const autoGrades = existingGrades.length === 0 || existingGrades.every((item) => !Boolean(item.user_edited))
         const gradeResultIsNotADowngrade = existingGrades.length === 0 || incomingIsRicher || syllabus.gradingItems.length >= existingGrades.length
-        if (plausibleGrades && autoGrades && gradeResultIsNotADowngrade) {
-          this.db.run('DELETE FROM grading_items WHERE course_id = ?', [localCourseId])
-          for (const item of syllabus.gradingItems) {
-            this.db.run('INSERT INTO grading_items (id, course_id, label, weight) VALUES (?, ?, ?, ?)',
-              [item.id, localCourseId, item.label, item.weight])
-          }
-        }
+        if (plausibleGrades) this.applyParsedGradingItems(localCourseId, syllabus.gradingItems, autoGrades && gradeResultIsNotADowngrade)
         for (const event of syllabus.events) {
           const outcome = this.upsertImportedEvent({
             id: event.id, courseId: localCourseId, title: event.title, type: event.type,
@@ -809,6 +833,10 @@ export class DatabaseService {
 
 function mapCourse(r: Row) {
   return { id:r.id, code:r.code, name:r.name, instructor:r.instructor, term:r.term, colorKey:r.color_key, timezone:r.timezone, notes:r.notes, createdAt:r.created_at, updatedAt:r.updated_at }
+}
+
+function normalizeGradeLabel(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '')
 }
 
 function openHealthyDatabase(SQL: Awaited<ReturnType<typeof initSqlJs>>, filePath: string): SqlDatabase | null {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, ChevronDown, ChevronRight, ChevronUp, ExternalLink, FileText, Pencil, Plus, Upload, X } from 'lucide-react'
 import { DateTime } from 'luxon'
 import type { AcademicEvent, Course, EventStatus, GradingItem, SyllabusInfo } from '../domain/types'
@@ -8,35 +8,36 @@ import { courseColorClass, courseColorStyle } from '../domain/courseColor'
 import { useI18n } from '../i18n'
 import { Modal } from '../components/Modal'
 import { SyllabusDocument } from '../components/SyllabusDocument'
+import { gradeAThresholdPercent, gradeContribution, gradingModeFor, projectedGrade, type GradingMode } from '../domain/grading'
 
 type Tab = 'deadlines' | 'syllabus'
 type UpcomingRange = '14' | '30' | 'all'
 type SyllabusField = 'rawSummary' | 'officeHours' | 'attendancePolicy' | 'latePolicy'
 type GradePanel = 'breakdown' | 'planner'
-type GradeDisplayMode = 'percentage' | 'points'
 
-export function CoursePage({ course, events, syllabus, gradingItems, gradingDisplayMode, onSaveCourse, onEditCourse, onAddEvent, onAddExam, onOpenEvent, onStatus, onSaveSyllabus, onSaveGrades }: {
+export function CoursePage({ course, events, syllabus, gradingItems, gradingDisplayMode, gradingTarget, onSaveCourse, onEditCourse, onAddEvent, onAddExam, onOpenEvent, onStatus, onSaveSyllabus, onSaveGrades }: {
   course: Course; events: AcademicEvent[]; syllabus?: SyllabusInfo; gradingItems: GradingItem[]
-  gradingDisplayMode: GradeDisplayMode
+  gradingDisplayMode: GradingMode; gradingTarget: number | null
   onSaveCourse: (course: Course) => void; onEditCourse: () => void; onAddEvent: () => void; onAddExam: () => void
   onOpenEvent: (event: AcademicEvent) => void; onStatus: (event: AcademicEvent, status: EventStatus) => void
-  onSaveSyllabus: (value: SyllabusInfo) => void; onSaveGrades: (items: GradingItem[], displayMode: GradeDisplayMode) => void
+  onSaveSyllabus: (value: SyllabusInfo) => void; onSaveGrades: (items: GradingItem[], gradingMode: GradingMode, target: number) => void
 }) {
   const { locale, t, courseName, termName } = useI18n()
   const [tab, setTab] = useState<Tab>('deadlines')
   const [notes, setNotes] = useState(course.notes)
   const [syllabusDraft, setSyllabusDraft] = useState<SyllabusInfo>(syllabus ?? blankSyllabus(course.id))
-  const [gradesDraft, setGradesDraft] = useState<GradingItem[]>(gradingItems)
+  const [gradesDraft, setGradesDraft] = useState<GradingItem[]>(() => withDefaultLost(gradingItems))
   const [gradePanel, setGradePanel] = useState<GradePanel>('breakdown')
-  const [gradeMode, setGradeMode] = useState<GradeDisplayMode>(gradingDisplayMode)
+  const [gradeTargetDraft, setGradeTargetDraft] = useState<number | null>(gradingTarget)
+  const [gradePlanDirty, setGradePlanDirty] = useState(false)
   const [upcomingRange, setUpcomingRange] = useState<UpcomingRange>('14')
   const [completedExpanded, setCompletedExpanded] = useState(false)
   const [syllabusViewerOpen, setSyllabusViewerOpen] = useState(false)
   const [activeSyllabusField, setActiveSyllabusField] = useState<SyllabusField>()
   const [fieldEditing, setFieldEditing] = useState(false)
   const [fieldDraft, setFieldDraft] = useState('')
-  useEffect(() => { setNotes(course.notes); setTab('deadlines'); setUpcomingRange('14'); setCompletedExpanded(false); setSyllabusViewerOpen(false); setActiveSyllabusField(undefined); setGradePanel('breakdown') }, [course.id])
-  useEffect(() => { setSyllabusDraft(syllabus ?? blankSyllabus(course.id)); setGradesDraft(gradingItems); setGradeMode(gradingDisplayMode) }, [course.id, syllabus, gradingItems, gradingDisplayMode])
+  useEffect(() => { setNotes(course.notes); setTab('deadlines'); setUpcomingRange('14'); setCompletedExpanded(false); setSyllabusViewerOpen(false); setActiveSyllabusField(undefined); setGradePanel('breakdown'); setGradePlanDirty(false) }, [course.id])
+  useEffect(() => { setSyllabusDraft(syllabus ?? blankSyllabus(course.id)); setGradesDraft(withDefaultLost(gradingItems)); setGradeTargetDraft(gradingTarget) }, [course.id, syllabus, gradingItems, gradingTarget])
   useEffect(() => {
     if (notes === course.notes) return
     const timer = setTimeout(() => onSaveCourse({ ...course, notes }), 650)
@@ -80,18 +81,32 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
   }
   const activeFieldDefinition = syllabusFields.find((field) => field.key === activeSyllabusField)
   const setGradeValue = (index: number, patch: Partial<GradingItem>) => setGradesDraft((all) => all.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
+  const setPlannerGradeValue = (index: number, patch: Partial<GradingItem>) => {
+    setGradeValue(index, patch)
+    setGradePlanDirty(true)
+  }
   const addGradeItem = () => setGradesDraft((all) => [...all, {
-    id:crypto.randomUUID(), courseId:course.id, label:t('category'), weight:0, points:null,
-    targetPoints:null, currentPoints:null, currentMode:'earned', userEdited:true
+    id:crypto.randomUUID(), courseId:course.id, label:t('category'), weight:0, points:gradeMode === 'points' ? 0 : null,
+    targetPoints:null, currentPoints:null, currentMode:'lost', userEdited:true
   }])
+  const gradeMode = gradingModeFor(gradesDraft, gradingDisplayMode)
   const percentageTotal = gradesDraft.reduce((sum, item) => sum + Number(item.weight || 0), 0)
   const pointsTotal = gradesDraft.reduce((sum, item) => sum + Number(item.points || 0), 0)
-  const targetTotal = gradesDraft.reduce((sum, item) => sum + Number(item.targetPoints || 0), 0)
-  const currentValues = gradesDraft.filter((item) => item.currentPoints !== null && item.currentPoints !== undefined).map((item) => item.currentMode === 'lost'
-    ? Math.max(0, Number(item.points || 0) - Number(item.currentPoints || 0))
-    : Number(item.currentPoints || 0))
-  const currentTotal = currentValues.reduce((sum, value) => sum + value, 0)
+  const projection = projectedGrade(gradesDraft, gradeMode)
+  const syllabusATarget = gradeAThresholdPercent(syllabusDraft.rawText?.trim() || syllabusDraft.rawSummary) ?? 93
+  const defaultGradeTarget = gradeMode === 'points' ? Math.round(pointsTotal * syllabusATarget) / 100 : syllabusATarget
+  const gradeTarget = gradeTargetDraft ?? defaultGradeTarget
+  const targetDifference = projection.value - gradeTarget
   const score = (value: number) => Number.isInteger(value) ? String(value) : value.toFixed(1)
+  const preciseScore = (value: number) => Number.isInteger(value) ? String(value) : value.toFixed(2)
+  useEffect(() => {
+    if (!gradePlanDirty) return
+    const timer = setTimeout(() => {
+      setGradePlanDirty(false)
+      onSaveGrades(gradesDraft, gradeMode, gradeTarget)
+    }, 550)
+    return () => clearTimeout(timer)
+  }, [gradePlanDirty, gradesDraft, gradeMode, gradeTarget, onSaveGrades])
   return <div className="page course-page">
     <header className="course-hero"><div><div className="course-code-line"><span className={`course-swatch ${courseColorClass(course.colorKey)}`} style={courseColorStyle(course.colorKey)}/><span>{course.code}</span></div><h1>{courseName(course.name) || t('courseName')}</h1><p>{course.instructor || t('instructorName')} · {termName(course.term) || t('term')}</p></div>
       <button className="button secondary" onClick={onEditCourse}><Pencil size={15}/>{t('editCourse')}</button></header>
@@ -128,10 +143,6 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
           <button type="button" className={gradePanel === 'planner' ? 'active' : ''} onClick={() => setGradePanel('planner')}>{t('scorePlanner')}</button>
         </div>
         {gradePanel === 'breakdown' ? <>
-          <div className="grade-toolbar"><span>{t('displayAs')}</span><div className="grade-unit-toggle" role="group" aria-label={t('displayAs')}>
-            <button type="button" className={gradeMode === 'points' ? 'active' : ''} onClick={() => setGradeMode('points')}>Points</button>
-            <button type="button" className={gradeMode === 'percentage' ? 'active' : ''} onClick={() => setGradeMode('percentage')}>%</button>
-          </div></div>
           <div className="grade-editor">{gradesDraft.map((item, index) => <div className="grade-edit-row" key={item.id}>
             <input aria-label={t('category')} value={item.label} onChange={(event) => setGradeValue(index, { label:event.target.value })}/>
             <div className="weight-input"><input type="number" min="0" max={gradeMode === 'percentage' ? 100 : undefined}
@@ -141,26 +152,35 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
           </div>)}</div>
           <button className="text-button" onClick={addGradeItem}><Plus size={14}/>{t('addCategory')}</button>
           <div className="grade-total"><span>{t('total')}</span><strong>{score(gradeMode === 'percentage' ? percentageTotal : pointsTotal)}{gradeMode === 'percentage' ? '%' : ` ${t('pointsShort')}`}</strong></div>
-          <div className="align-right"><button className="button primary" onClick={() => onSaveGrades(gradesDraft, gradeMode)}>{t('saveGradeBreakdown')}</button></div>
+          <div className="align-right"><button className="button primary" onClick={() => onSaveGrades(gradesDraft, gradeMode, gradeTarget)}>{t('saveGradeBreakdown')}</button></div>
         </> : <>
           <p className="grade-planner-hint">{t('scorePlannerHint')}</p>
-          <div className="grade-plan-heading"><span>{t('category')}</span><span>{t('maxScore')}</span><span>{t('targetScore')}</span><span>{t('currentScore')}</span></div>
-          <div className="grade-plan-list">{gradesDraft.map((item, index) => <div className="grade-plan-row" key={item.id}>
-            <strong title={item.label}>{item.label}</strong>
-            <label><span>{t('maxScore')}</span><input type="number" min="0" value={item.points ?? ''} onChange={(event) => setGradeValue(index, { points:optionalNumber(event.target.value) })}/></label>
-            <label><span>{t('targetScore')}</span><input type="number" min="0" value={item.targetPoints ?? ''} onChange={(event) => setGradeValue(index, { targetPoints:optionalNumber(event.target.value) })}/></label>
-            <label className="grade-current-field"><span>{t('currentScore')}</span><div><input type="number" min="0" value={item.currentPoints ?? ''} onChange={(event) => setGradeValue(index, { currentPoints:optionalNumber(event.target.value) })}/><select value={item.currentMode ?? 'earned'} onChange={(event) => setGradeValue(index, { currentMode:event.target.value === 'lost' ? 'lost' : 'earned' })}><option value="earned">{t('earned')}</option><option value="lost">{t('lost')}</option></select></div></label>
-          </div>)}</div>
-          {!gradesDraft.length && <p className="empty-inline grade-plan-empty">{t('addGradeCategoriesFirst')}</p>}
-          <div className="grade-plan-summary">
-            <div><span>{t('maxTotal')}</span><strong>{score(pointsTotal)} {t('pointsShort')}</strong></div>
-            <div><span>{t('targetTotal')}</span><strong>{score(targetTotal)} {t('pointsShort')}</strong></div>
-            <div><span>{t('currentEstimate')}</span><strong>{currentValues.length ? `${score(currentTotal)} ${t('pointsShort')}` : '—'}</strong></div>
-            <div><span>{t('gapToTarget')}</span><strong>{currentValues.length ? `${score(Math.max(0, targetTotal - currentTotal))} ${t('pointsShort')}` : '—'}</strong></div>
+          <div className="grade-projection-table">
+            <div className="grade-projection-heading"><span>{t('category')}</span><span>{gradeMode === 'points' ? t('maxScore') : t('weight')}</span><span>{t('myExpectedScore')}</span><span>{t('contribution')}</span></div>
+            <div className="grade-plan-list">{gradesDraft.map((item, index) => {
+              const calculation = gradeContribution(item, gradeMode)
+              const basis = gradeMode === 'points' ? Number(item.points ?? 0) : Number(item.weight || 0)
+              return <div className="grade-projection-row" key={item.id}>
+                <strong title={item.label}>{item.label}</strong>
+                <span className="grade-basis-value">{score(basis)}{gradeMode === 'points' ? ` ${t('pointsShort')}` : '%'}</span>
+                <label className="grade-current-field"><span>{t('myExpectedScore')}</span><div><input type="number" min="0" max={gradeMode === 'points' ? Number(item.points ?? 0) || undefined : 100} value={item.currentPoints ?? ''} onChange={(event) => setPlannerGradeValue(index, { currentPoints:optionalNumber(event.target.value) })}/><ScoreModeSelect value={item.currentMode ?? 'lost'} earnedLabel={t('earned')} lostLabel={t('lost')} onChange={(currentMode) => setPlannerGradeValue(index, { currentMode })}/></div></label>
+                <span className="grade-contribution"><strong>{calculation.contribution === null ? '—' : `${preciseScore(calculation.contribution)}${gradeMode === 'points' ? ` ${t('pointsShort')}` : '%'}`}</strong>{calculation.earned !== null && <small>{gradeMode === 'percentage' ? `${score(basis)}% × ${score(calculation.earned)}%` : `${score(calculation.earned)} / ${score(basis)} ${t('pointsShort')}`}</small>}</span>
+              </div>
+            })}</div>
           </div>
-          <div className="align-right"><button className="button primary" onClick={() => onSaveGrades(gradesDraft, gradeMode)}>{t('saveScorePlan')}</button></div>
+          {!gradesDraft.length && <p className="empty-inline grade-plan-empty">{t('addGradeCategoriesFirst')}</p>}
+          <div className="grade-projection-summary">
+            <div><span>{t('projectedGrade')}</span><strong>{projection.hasScores ? `${preciseScore(projection.value)}${gradeMode === 'points' ? ` ${t('pointsShort')}` : '%'}` : '—'}</strong></div>
+            <label><span>{t('targetGrade')}</span><span className="grade-target-input"><input type="number" min="0" max={gradeMode === 'points' ? pointsTotal || undefined : 100} value={gradeTarget} onChange={(event) => { setGradeTargetDraft(optionalNumber(event.target.value)); setGradePlanDirty(true) }}/><em>{gradeMode === 'points' ? t('pointsShort') : '%'}</em></span></label>
+            <div><span>{projection.hasScores ? (targetDifference >= 0 ? t('aboveTarget') : t('belowTarget')) : t('difference')}</span><strong className={projection.hasScores ? (targetDifference >= 0 ? 'positive' : 'negative') : ''}>{projection.hasScores ? `${targetDifference >= 0 ? '+' : '−'}${preciseScore(Math.abs(targetDifference))}${gradeMode === 'points' ? ` ${t('pointsShort')}` : '%'}` : '—'}</strong></div>
+          </div>
+          {!projection.complete && projection.hasScores && <p className="grade-projection-note">{t('incompleteProjection')}</p>}
+          <span className="save-state grade-planner-save-state">{t('autosaves')}</span>
         </>}
-        <div className="parser-note"><BookOpen size={18}/><p><strong>{t('parsingStatus')}</strong><br/>{syllabusDraft.sourceType === 'brightspace_api' ? t('parserBrightspace') : t('parserLocal')}</p></div>
+        {gradePanel === 'breakdown' && <>
+          <div className="grade-detected-mode"><span>{t('gradingBasis')}</span><strong>{gradeMode === 'points' ? t('pointsBased') : t('weightedPercentage')}</strong></div>
+          <div className="parser-note"><BookOpen size={18}/><p><strong>{t('parsingStatus')}</strong><br/>{syllabusDraft.sourceType === 'brightspace_api' ? t('parserBrightspace') : t('parserLocal')}</p></div>
+        </>}
       </section>
     </div>}
     {activeSyllabusField && activeFieldDefinition && <Modal title={activeFieldDefinition.label} onClose={closeSyllabusField} wide className="syllabus-field-modal">
@@ -186,3 +206,31 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
 
 const blankSyllabus = (courseId: string): SyllabusInfo => ({ courseId, attendancePolicy:'', latePolicy:'', officeHours:'', rawSummary:'' })
 const optionalNumber = (value: string) => value === '' ? null : Number(value)
+const withDefaultLost = (items: GradingItem[]) => items.map((item) => item.currentPoints === null || item.currentPoints === undefined
+  ? { ...item, currentMode:'lost' as const }
+  : item)
+
+function ScoreModeSelect({ value, earnedLabel, lostLabel, onChange }: {
+  value:'earned' | 'lost'; earnedLabel:string; lostLabel:string; onChange:(value: 'earned' | 'lost') => void
+}) {
+  const root = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+  const options = [{ value:'earned' as const, label:earnedLabel }, { value:'lost' as const, label:lostLabel }]
+  return <div className="score-mode-select" ref={root}>
+    <button type="button" className="score-mode-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
+      <span>{value === 'lost' ? lostLabel : earnedLabel}</span><ChevronDown size={13}/>
+    </button>
+    {open && <div className="score-mode-menu" role="listbox">{options.map((option) => <button type="button" role="option" aria-selected={option.value === value} className={`score-mode-option ${option.value === value ? 'active' : ''}`} key={option.value} onClick={() => { onChange(option.value); setOpen(false) }}>{option.label}</button>)}</div>}
+  </div>
+}

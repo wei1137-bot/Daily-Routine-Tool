@@ -19,8 +19,10 @@ const messages = {
     summaryPlaceholder:'Important topics and course structure…', officeHours:'Office hours', attendancePolicy:'Attendance policy', latePolicy:'Late policy',
     saveSyllabus:'Save syllabus details', brightspaceSyllabus:'Brightspace syllabus', attachPdf:'Attach syllabus PDF', viewFullSyllabus:'Click to view full syllabus',
     clickReplace:'Click to replace', structuredData:'Structured data', grades:'Grades', gradeBreakdown:'Grade breakdown', scorePlanner:'Score planner', category:'Category', remove:'Remove', addCategory:'Add category',
-    displayAs:'Display as', pointsShort:'pts', scorePlannerHint:'Plan a target and track progress for each grading category. Current score can be entered as points earned or points lost.',
+    displayAs:'Display as', pointsShort:'pts', gradingBasis:'Grading basis', weightedPercentage:'Weighted percentage', pointsBased:'Total points', weight:'Weight', myExpectedScore:'My estimate / score', contribution:'Contribution',
+    scorePlannerHint:'Enter an expected or known score for each category. Daily Routine calculates its contribution to the projected course grade. Scores can be entered as earned or lost.',
     maxScore:'Max', targetScore:'Target', currentScore:'Current', earned:'Earned', lost:'Lost', maxTotal:'Maximum', targetTotal:'Target', currentEstimate:'Current estimate', gapToTarget:'To target', saveScorePlan:'Save score plan', addGradeCategoriesFirst:'Add grading categories on the Grade breakdown tab first.',
+    projectedGrade:'Projected grade', targetGrade:'Target grade', difference:'Difference', aboveTarget:'Above target', belowTarget:'Below target', incompleteProjection:'Projection currently includes only categories with a score.',
     total:'Total', saveGradeBreakdown:'Save grade breakdown', parsingStatus:'Parsing status', parserBrightspace:'Automatically downloaded and extracted from Brightspace. Review or edit any field, then save to keep your changes.',
     parserLocal:'Attached PDFs and structured fields stay local. Brightspace syllabi are extracted automatically during sync.', fullSyllabus:'Full syllabus',
     closeSyllabus:'Close syllabus', noSyllabus:'No syllabus content is available yet.', openPdf:'Open PDF', done:'Done',
@@ -54,7 +56,7 @@ const messages = {
     opening:'Opening Daily Routine…', addFirstCourse:'Add your first course', welcomeTitle:'Welcome to Daily Routine', welcomeSubtitle:'Set up your courses',
     onboardingBrightspace:'Connect Brightspace', onboardingBrightspaceHint:'Automatically import courses and deadlines', onboardingGradescope:'Connect Gradescope', onboardingGradescopeHint:'Import Gradescope courses and deadlines',
     onboardingManual:'Add manually', onboardingManualHint:'Create a course yourself', dismiss:'Dismiss', deleteCourseConfirm:'and all its events?', deleteEventConfirm:'Delete event?'
-    ,weeklyPlan:'Weekly plan', scheduleSubtitle:'Import a timetable screenshot or build your weekly class schedule manually.', addClass:'Add class', importScheduleImage:'Import schedule image', recognizingSchedule:'Recognizing…', scheduleImageOnly:'Please choose a PNG, JPEG, or WebP image.', dropSchedule:'Drop a timetable image here', dropScheduleHint:'Course codes, weekdays, times, and rooms are recognized locally.', recognizedClasses:'Recognized classes', reviewSchedule:'Review timetable', saveSchedule:'Save timetable', scheduleSaved:'Timetable saved locally.', selectCourse:'Select course', day:'Day', startTime:'Start time', endTime:'End time', location:'Location', classType:'Class type', noClassesRecognized:'No classes were recognized. Try a clearer image or add a class manually.', monday:'Monday', tuesday:'Tuesday', wednesday:'Wednesday', thursday:'Thursday', friday:'Friday'
+    ,weeklyPlan:'Weekly plan', scheduleSubtitle:'Import a timetable screenshot or build your weekly class schedule manually.', editSchedule:'Edit timetable', addClass:'Add class row', importScheduleImage:'Import schedule image', chooseScheduleImage:'Choose image file', recognizingSchedule:'Recognizing…', scheduleImageOnly:'Please choose a PNG, JPEG, or WebP image.', dropSchedule:'Drop a timetable image here', dropScheduleHint:'Course codes, weekdays, times, and rooms are recognized locally.', recognizedClasses:'Recognized classes', reviewSchedule:'Review timetable', saveSchedule:'Save timetable', scheduleSaved:'Timetable saved locally.', selectCourse:'Select course', day:'Day', startTime:'Start time', endTime:'End time', location:'Location', classType:'Class type', noClassesRecognized:'No classes were recognized. Try a clearer image or add a class manually.', monday:'Monday', tuesday:'Tuesday', wednesday:'Wednesday', thursday:'Thursday', friday:'Friday'
   },
   zh: {
     dashboard:'总览', inbox:'收件箱', schedule:'课程表', calendar:'日历', settings:'设置', courses:'课程', addCourse:'添加课程',
@@ -65,13 +67,15 @@ const messages = {
     today:'今天', tomorrow:'明天', next7Days:'未来 7 天', later:'稍后', past:'过去',
     deadlines:'截止日期', syllabus:'课程大纲', editCourse:'编辑课程', courseSchedule:'课程日程', deadlinesAndExams:'截止日期与考试',
     upcoming:'即将到来', overdue:'已过期', completed:'已完成', noUpcomingRange:'该时间范围内没有事项。', nothingOverdue:'没有已过期事项。', nothingCompleted:'还没有已完成事项。',
-    twoWeeks:'两周', oneMonth:'一个月', all:'全部', personal:'个人', notes:'笔记', notesPlaceholder:'记录任何需要记住的课程信息…',
+    twoWeeks:'两周', oneMonth:'一个月', all:'全部', personal:'个人', notes:'备注', notesPlaceholder:'记录任何需要记住的课程信息…',
     autosaves:'自动保存到本机', nextExam:'下一场考试', noUpcomingExam:'暂无考试', sourceDocument:'来源文档', courseSummary:'课程概述',
     summaryPlaceholder:'重要主题与课程结构…', officeHours:'答疑时间', attendancePolicy:'出勤政策', latePolicy:'迟交政策',
     saveSyllabus:'保存大纲信息', brightspaceSyllabus:'Brightspace 课程大纲', attachPdf:'添加课程大纲 PDF', viewFullSyllabus:'点击查看完整课程大纲',
     clickReplace:'点击替换', structuredData:'结构化数据', grades:'成绩', gradeBreakdown:'成绩构成', scorePlanner:'分数规划', category:'类别', remove:'移除', addCategory:'添加类别',
-    displayAs:'显示方式', pointsShort:'分', scorePlannerHint:'为每个成绩划分设置满分与目标；“现在”既可以填写已得分，也可以填写已扣分。',
+    displayAs:'显示方式', pointsShort:'分', gradingBasis:'计分方式', weightedPercentage:'加权百分比', pointsBased:'总分制', weight:'权重', myExpectedScore:'我的预期／成绩', contribution:'总评贡献',
+    scorePlannerHint:'为每个成绩划分填写预期或已知成绩，软件会自动计算它对课程总评的贡献；成绩支持按已得分或已扣分填写。',
     maxScore:'满分', targetScore:'目标', currentScore:'现在', earned:'已得分', lost:'已扣分', maxTotal:'总满分', targetTotal:'总目标', currentEstimate:'当前估算', gapToTarget:'距目标', saveScorePlan:'保存分数规划', addGradeCategoriesFirst:'请先在“成绩构成”页添加成绩类别。',
+    projectedGrade:'预计总评', targetGrade:'目标成绩', difference:'与目标差值', aboveTarget:'高于目标', belowTarget:'低于目标', incompleteProjection:'当前预计只包含已经填写成绩的类别。',
     total:'合计', saveGradeBreakdown:'保存成绩构成', parsingStatus:'解析状态', parserBrightspace:'已从 Brightspace 自动下载并解析。你可以检查或修改字段，然后保存更改。',
     parserLocal:'添加的 PDF 与结构化字段保存在本机；同步时会自动解析 Brightspace 课程大纲。', fullSyllabus:'完整课程大纲',
     closeSyllabus:'关闭课程大纲', noSyllabus:'目前没有可显示的课程大纲内容。', openPdf:'打开 PDF', done:'完成',
@@ -105,7 +109,7 @@ const messages = {
     opening:'正在打开 Daily Routine…', addFirstCourse:'添加第一门课程', welcomeTitle:'欢迎使用 Daily Routine', welcomeSubtitle:'设置你的课程',
     onboardingBrightspace:'连接 Brightspace', onboardingBrightspaceHint:'自动导入课程和截止日期', onboardingGradescope:'连接 Gradescope', onboardingGradescopeHint:'导入 Gradescope 课程和截止日期',
     onboardingManual:'手动添加', onboardingManualHint:'自行创建一门课程', dismiss:'关闭', deleteCourseConfirm:'以及该课程的所有事项？', deleteEventConfirm:'删除该事项？'
-    ,weeklyPlan:'每周安排', scheduleSubtitle:'上传课程表截图自动识别，也可以手动建立每周课程表。', addClass:'添加课程时段', importScheduleImage:'导入课程表图片', recognizingSchedule:'正在识别…', scheduleImageOnly:'请选择 PNG、JPEG 或 WebP 图片。', dropSchedule:'将课程表图片拖到这里', dropScheduleHint:'课程代码、星期、时间和教室均在本机识别。', recognizedClasses:'识别结果', reviewSchedule:'检查课程表', saveSchedule:'保存课程表', scheduleSaved:'课程表已保存到本机。', selectCourse:'选择课程', day:'星期', startTime:'开始时间', endTime:'结束时间', location:'教室', classType:'课程类型', noClassesRecognized:'没有识别到课程，请换一张更清晰的图片或手动添加。', monday:'星期一', tuesday:'星期二', wednesday:'星期三', thursday:'星期四', friday:'星期五'
+    ,weeklyPlan:'每周安排', scheduleSubtitle:'上传课程表截图自动识别，也可以手动建立每周课程表。', editSchedule:'编辑课程表', addClass:'添加一行', importScheduleImage:'导入课程表图片', chooseScheduleImage:'选择图片文件', recognizingSchedule:'正在识别…', scheduleImageOnly:'请选择 PNG、JPEG 或 WebP 图片。', dropSchedule:'将课程表图片拖到这里', dropScheduleHint:'课程代码、星期、时间和教室均在本机识别。', recognizedClasses:'识别结果', reviewSchedule:'检查课程表', saveSchedule:'保存课程表', scheduleSaved:'课程表已保存到本机。', selectCourse:'选择课程', day:'星期', startTime:'开始时间', endTime:'结束时间', location:'教室', classType:'课程类型', noClassesRecognized:'没有识别到课程，请换一张更清晰的图片或手动添加。', monday:'星期一', tuesday:'星期二', wednesday:'星期三', thursday:'星期四', friday:'星期五'
   }
 } as const
 

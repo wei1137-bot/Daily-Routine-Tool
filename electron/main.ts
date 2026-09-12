@@ -7,6 +7,7 @@ import { GradescopeService } from './gradescope'
 import { recognizeScheduleImage } from './schedule-ocr'
 import { CredentialStore } from './credential-store'
 import { canonicalAppDataRoot, prepareStableUserData } from './user-data'
+import { trayLabels } from './tray-menu'
 
 let database: DatabaseService
 let brightspace: BrightspaceService
@@ -85,13 +86,19 @@ function createTray() {
   const trayImage = nativeImage.createFromPath(runtimeAssetPath('app-icon.png')).resize({ width: 20, height: 20 })
   tray = new Tray(trayImage)
   tray.setToolTip('Daily Routine')
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开 Daily Routine', click: showWindow },
-    { type: 'separator' },
-    { label: '退出', click: () => { isQuitting = true; app.quit() } }
-  ]))
+  updateTrayMenu()
   tray.on('click', showWindow)
   tray.on('double-click', showWindow)
+}
+
+function updateTrayMenu(language = database.getState().settings.language) {
+  if (!tray) return
+  const labels = trayLabels(language)
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: labels.open, click: showWindow },
+    { type: 'separator' },
+    { label: labels.quit, click: () => { isQuitting = true; app.quit() } }
+  ]))
 }
 
 function runBrightspaceSync(baseUrl: string) {
@@ -218,7 +225,11 @@ ipcMain.handle('db:save-schedule', (_e, value) => database.saveSchedule(value))
 ipcMain.handle('db:save-event-plans', (_e, value) => database.saveEventPlans(value))
 ipcMain.handle('db:save-detected', (_e, value) => database.saveDetected(value))
 ipcMain.handle('db:resolve-detected', (_e, value) => database.resolveDetected(value))
-ipcMain.handle('db:save-setting', (_e, value) => database.saveSetting(value))
+ipcMain.handle('db:save-setting', (_e, value) => {
+  const state = database.saveSetting(value)
+  if (value?.key === 'language') updateTrayMenu(state.settings.language)
+  return state
+})
 ipcMain.handle('db:reset-demo', () => database.resetDemo())
 ipcMain.handle('db:get-path', () => database.filePath)
 ipcMain.handle('brightspace:status', (_e, baseUrl: string) => brightspace.getStatus(baseUrl))

@@ -10,7 +10,7 @@ declare global {
       saveEventStatus(payload: Pick<AcademicEvent, 'id' | 'status'>): Promise<AppState>
       deleteEvent(id: string): Promise<AppState>
       saveSyllabus(syllabus: SyllabusInfo): Promise<AppState>
-      saveGradingItems(payload: { courseId: string; items: GradingItem[]; displayMode: 'percentage' | 'points' }): Promise<AppState>
+      saveGradingItems(payload: { courseId: string; items: GradingItem[]; gradingMode: 'percentage' | 'points'; target: number }): Promise<AppState>
       saveSchedule(payload: { meetings: CourseMeeting[]; deletedIds: string[] }): Promise<AppState>
       saveEventPlans(payload: { plans: Array<{ eventId: string; plannedDate: string | null }> }): Promise<AppState>
       recognizeScheduleImage(payload: { bytes: Uint8Array; name: string }): Promise<ScheduleRecognition>

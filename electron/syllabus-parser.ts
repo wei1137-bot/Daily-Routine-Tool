@@ -14,7 +14,7 @@ export interface ParsedSyllabus {
   officeHours: string
   attendancePolicy: string
   latePolicy: string
-  gradingItems: Array<{ id: string; label: string; weight: number }>
+  gradingItems: Array<{ id: string; label: string; weight: number; points: number | null }>
   events: Array<{ id: string; title: string; type: 'exam'; dueAt: string }>
 }
 
@@ -194,7 +194,7 @@ function extractPolicyParagraph(text: string, subject: RegExp, behavior: RegExp)
   return lines.slice(index, index + 3).join('\n').trim().slice(0, 5000)
 }
 
-function extractGradingItems(text: string, courseId: number) {
+function extractGradingItems(text: string, courseId: number): ParsedSyllabus['gradingItems'] {
   const scope = firstNonEmpty(
     section(text, 'Grades and Grade Reports', ['Attendance Policy', 'Course Schedule']),
     section(text, 'Grading', ['Attendance Policy', 'Course Schedule']),
@@ -243,25 +243,36 @@ function extractGradingItems(text: string, courseId: number) {
     add(toLabel(label), weight)
   }
 
-  let resolved = removeAggregateRows(found)
-  if (!resolved.length) {
-    const pointRows: Array<{ label: string; points: number }> = []
-    for (const line of text.split('\n').map((value) => value.trim()).filter(Boolean)) {
-      const match = line.match(/^(.{2,80}?)\s*:?\s*TOTAL\s*=\s*(\d+(?:\.\d+)?)\s*PTS?\b/i)
-      if (!match) continue
-      const label = cleanGradeLabel(match[1])
-      if (label && !pointRows.some((item) => normalizeHeading(item.label) === normalizeHeading(label))) {
-        pointRows.push({ label, points: Number(match[2]) })
-      }
-    }
-    const hasExamAggregate = pointRows.some((item) => normalizeHeading(item.label) === 'exams')
-    const topLevelRows = hasExamAggregate
-      ? pointRows.filter((item) => normalizeHeading(item.label) === 'exams' || !/(midterm|finalexam)/i.test(normalizeHeading(item.label)))
-      : pointRows
-    const total = topLevelRows.reduce((sum, item) => sum + item.points, 0)
-    if (total > 0) resolved = topLevelRows.map((item) => ({ label: item.label, weight: Math.round(item.points / total * 1000) / 10 }))
+  const resolvedPercentages = removeAggregateRows(found)
+  if (resolvedPercentages.length) {
+    return resolvedPercentages.map((item, index) => ({
+      id: `brightspace-syllabus-${courseId}-grade-${index + 1}`,
+      ...item,
+      points: null
+    }))
   }
-  return resolved.map((item, index) => ({ id: `brightspace-syllabus-${courseId}-grade-${index + 1}`, ...item }))
+
+  const pointRows: Array<{ label: string; points: number }> = []
+  for (const line of text.split('\n').map((value) => value.trim()).filter(Boolean)) {
+    const match = line.match(/^(.{2,100}?)\s*:?\s*TOTAL\s*=\s*(\d+(?:\.\d+)?)\s*\*?\s*(?:PTS?|POINTS?)\b/i)
+    if (!match) continue
+    const label = cleanGradeLabel(match[1])
+    const normalized = normalizeHeading(label)
+    if (!label || /^(?:course)?grand(?:total)?$|^coursetotal$/.test(normalized)) continue
+    if (!pointRows.some((item) => normalizeHeading(item.label) === normalized)) {
+      pointRows.push({ label, points: Number(match[2]) })
+    }
+  }
+  const hasExamAggregate = pointRows.some((item) => normalizeHeading(item.label) === 'exams')
+  const topLevelRows = hasExamAggregate
+    ? pointRows.filter((item) => normalizeHeading(item.label) === 'exams' || !/(midterm|finalexam)/i.test(normalizeHeading(item.label)))
+    : pointRows
+  return topLevelRows.map((item, index) => ({
+    id: `brightspace-syllabus-${courseId}-grade-${index + 1}`,
+    label:item.label,
+    weight:0,
+    points:item.points
+  }))
 }
 
 function extractExamEvents(text: string, courseId: number, courseName: string, timezone: string) {

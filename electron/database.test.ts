@@ -119,7 +119,7 @@ describe('weekly planning persistence', () => {
 })
 
 describe('grade planning persistence', () => {
-  it('keeps percentage and points data together with the selected current-score mode', async () => {
+  it('keeps the detected grading mode, course target, and current-score mode', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-grades-'))
     temporaryDirectories.push(directory)
     const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
@@ -129,16 +129,46 @@ describe('grade planning persistence', () => {
     })
 
     const state = database.saveGradingItems({
-      courseId:'score-course', displayMode:'points', items:[
+      courseId:'score-course', gradingMode:'points', target:554, items:[
         { id:'exams', courseId:'score-course', label:'Exams', weight:73.17, points:450, targetPoints:405, currentPoints:18, currentMode:'lost' },
         { id:'other', courseId:'score-course', label:'Other work', weight:26.83, points:165, targetPoints:150, currentPoints:120, currentMode:'earned' }
       ]
     })
 
-    expect(state.settings['gradingDisplayMode:score-course']).toBe('points')
+    expect(state.settings['gradingMode:score-course']).toBe('points')
+    expect(state.settings['gradingTarget:score-course']).toBe('554')
     expect(state.gradingItems.filter((item) => item.courseId === 'score-course')).toEqual([
       expect.objectContaining({ id:'exams', weight:73.17, points:450, targetPoints:405, currentPoints:18, currentMode:'lost', userEdited:true }),
       expect.objectContaining({ id:'other', weight:26.83, points:165, targetPoints:150, currentPoints:120, currentMode:'earned', userEdited:true })
+    ])
+  })
+
+  it('restores syllabus points onto matching legacy percentage rows without losing planner input', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-point-migration-'))
+    temporaryDirectories.push(directory)
+    const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
+    const course = { id:222, code:'PSY 222', name:'Fall 2026 PSY 222', isActive:true, startDate:null, endDate:null }
+    const stats = { enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:1 }
+    const base = { baseUrl:'https://purdue.brightspace.com', courses:[course], items:[], warnings:[], excludedCourseIds:[], stats }
+    database.importBrightspace({ ...base, syllabi:[] })
+    database.saveGradingItems({
+      courseId:'brightspace-course-222', gradingMode:'percentage', target:90,
+      items:[
+        { id:'legacy-exams', label:'EXAMS', weight:73.2, points:null, currentPoints:405, currentMode:'earned' },
+        { id:'legacy-work', label:'HOMEWORK', weight:26.8, points:null, currentPoints:150, currentMode:'earned' }
+      ]
+    })
+    const syllabus = parseSyllabus({
+      courseId:222, courseName:course.name, timezone:'America/Indiana/Indianapolis', sourceKind:'simple-syllabus',
+      text:'EXAMS: TOTAL = 450pts\nHOMEWORK: TOTAL = 165pts\nCOURSE GRAND TOTAL = 615 POINTS'
+    })
+
+    const state = database.importBrightspace({ ...base, syllabi:[syllabus] }).state
+
+    expect(state.settings['gradingMode:brightspace-course-222']).toBe('points')
+    expect(state.gradingItems.filter((item) => item.courseId === 'brightspace-course-222')).toEqual([
+      expect.objectContaining({ id:'legacy-exams', points:450, currentPoints:405, userEdited:true }),
+      expect.objectContaining({ id:'legacy-work', points:165, currentPoints:150, userEdited:true })
     ])
   })
 })

@@ -28,6 +28,10 @@ describe('syllabus parser', () => {
     expect(parsed.officeHours).toContain('Monday and Wednesday')
     expect(parsed.attendancePolicy).toContain('expected to attend')
     expect(parsed.latePolicy).toContain('lose 10%')
+    expect(parsed.gradingItems).toEqual([
+      expect.objectContaining({ label:'Homework', weight:40, points:null }),
+      expect.objectContaining({ label:'Exams', weight:60, points:null })
+    ])
   })
 
   it('falls back to policy sentences when a document has no clean headings', () => {
@@ -58,5 +62,28 @@ describe('syllabus parser', () => {
     })
 
     expect(parsed.attendancePolicy).toBe('')
+  })
+
+  it('keeps point-based grading as points instead of converting it to percentages', () => {
+    const parsed = parseSyllabus({
+      courseId:222,
+      courseName:'Fall 2026 PSY 222',
+      timezone:'America/Indiana/Indianapolis',
+      text:`COURSE GRAND TOTAL = 615* POINTS
+      EXAMS (MODULE ASSESSMENT): TOTAL = 450pts
+      EXAM 1 (MODULE #1) = 100 PTS
+      CUMULATIVE FINAL EXAM: TOTAL = 150PTS
+      HOMEWORK/IN-CLASS Assignments/attendance (ICA) etc: TOTAL = 65pts
+      ONLINE DISCUSSION POST/RESPONSES (4x20): TOTAL = 80 pts
+      APPLICATION: FINAL JOURNAL Discussion-Reflection: TOTAL = 20pts`
+    })
+
+    expect(parsed.gradingItems).toEqual([
+      expect.objectContaining({ label:'EXAMS', weight:0, points:450 }),
+      expect.objectContaining({ label:'HOMEWORK/IN-CLASS Assignments/Attendance (ICA) Etc', weight:0, points:65 }),
+      expect.objectContaining({ label:'ONLINE DISCUSSION POST/RESPONSES', weight:0, points:80 }),
+      expect.objectContaining({ label:'APPLICATION: FINAL JOURNAL Discussion-Reflection', weight:0, points:20 })
+    ])
+    expect(parsed.gradingItems.reduce((sum, item) => sum + Number(item.points), 0)).toBe(615)
   })
 })

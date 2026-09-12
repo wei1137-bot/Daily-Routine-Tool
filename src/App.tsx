@@ -117,10 +117,12 @@ export function App() {
       {page === 'course' && activeCourse && <CoursePage key={activeCourse.id} course={activeCourse}
         events={displayEvents.filter((e) => e.courseId === activeCourse.id)} syllabus={state.syllabi.find((s) => s.courseId === activeCourse.id)}
         gradingItems={state.gradingItems.filter((g) => g.courseId === activeCourse.id)}
-        gradingDisplayMode={state.settings[`gradingDisplayMode:${activeCourse.id}`] === 'points' ? 'points' : 'percentage'} onSaveCourse={saveCourse}
+        gradingDisplayMode={(state.settings[`gradingMode:${activeCourse.id}`] ?? state.settings[`gradingDisplayMode:${activeCourse.id}`]) === 'points' ? 'points' : 'percentage'}
+        gradingTarget={settingNumber(state.settings[`gradingTarget:${activeCourse.id}`])} onSaveCourse={saveCourse}
         onEditCourse={() => setCourseModal(activeCourse)} onAddEvent={() => setEventModal('new')} onAddExam={() => setEventModal('new-exam')} onOpenEvent={setEventModal} onStatus={statusEvent}
         onSaveSyllabus={(value: SyllabusInfo) => void perform(() => window.dailyRoutine.saveSyllabus(value))}
-        onSaveGrades={(items: GradingItem[], displayMode: 'percentage' | 'points') => void perform(() => window.dailyRoutine.saveGradingItems({ courseId:activeCourse.id, items, displayMode }))}/>} 
+        onSaveGrades={(items: GradingItem[], gradingMode: 'percentage' | 'points', target: number) => void perform(() => window.dailyRoutine.saveGradingItems({ courseId:activeCourse.id, items, gradingMode, target }))}/>
+      }
       {page === 'schedule' && <SchedulePage courses={state.courses} meetings={state.meetings}
         onSave={async (meetings, deletedIds) => { await perform(() => window.dailyRoutine.saveSchedule({ meetings, deletedIds })) }}/>} 
       {page === 'calendar' && <CalendarPage courses={state.courses} events={displayEvents} plans={state.eventPlans} timezone={defaultTimezone} onOpenEvent={setEventModal} onAdd={() => setEventModal('new')}
@@ -143,4 +145,9 @@ function currentAcademicTerm(timezone: string) {
   const now = DateTime.now().setZone(timezone)
   const season = now.month <= 5 ? 'Spring' : now.month <= 7 ? 'Summer' : 'Fall'
   return `${season} ${now.year}`
+}
+
+function settingNumber(value?: string) {
+  const number = Number(value)
+  return value !== undefined && Number.isFinite(number) ? number : null
 }
