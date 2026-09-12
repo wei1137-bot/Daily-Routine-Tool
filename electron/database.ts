@@ -10,6 +10,13 @@ type Row = Record<string, string | number | null>
 
 const now = () => new Date().toISOString()
 
+export function syllabusSourcePriority(sourceExternalId: string) {
+  if (/:(?:overview-attachment|content-file):/.test(sourceExternalId)) return 3
+  if (/:simple-syllabus:/.test(sourceExternalId)) return 2
+  if (/:overview:/.test(sourceExternalId)) return 1
+  return 0
+}
+
 export class DatabaseService {
   private db!: SqlDatabase
   readonly filePath: string
@@ -23,9 +30,28 @@ export class DatabaseService {
       locateFile: () => require.resolve('sql.js/dist/sql-wasm.wasm')
     })
     const service = new DatabaseService(filePath)
-    service.db = fs.existsSync(filePath)
-      ? new SQL.Database(fs.readFileSync(filePath))
-      : new SQL.Database()
+    const backupPath = `${filePath}.bak`
+    const mainExists = fs.existsSync(filePath)
+    let opened = openHealthyDatabase(SQL, filePath)
+    if (!opened) {
+      const backup = openHealthyDatabase(SQL, backupPath)
+      if (!backup) {
+        if (mainExists || fs.existsSync(backupPath)) {
+          throw new Error(`数据库无法读取，且没有可用备份。为防止数据被空库覆盖，已停止启动：${filePath}`)
+        }
+        opened = new SQL.Database()
+      } else {
+        backup.close()
+        if (mainExists) {
+          const corruptCopy = `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+          fs.copyFileSync(filePath, corruptCopy)
+        }
+        copyFileAtomically(backupPath, filePath)
+        opened = openHealthyDatabase(SQL, filePath)
+        if (!opened) throw new Error(`数据库备份恢复失败：${filePath}`)
+      }
+    }
+    service.db = opened
     service.migrate()
     service.reparseStoredSyllabi()
     return service
@@ -107,6 +133,13 @@ export class DatabaseService {
       this.db.run(`INSERT OR REPLACE INTO event_status_overrides_v2
         (event_id, status, updated_at) VALUES (?, ?, ?)`, [event.id, event.status, event.updated_at])
     }
+    for (const override of this.rows(`SELECT e.course_id, e.title, o.status, o.updated_at
+      FROM event_status_overrides_v2 o JOIN events e ON e.id = o.event_id`)) {
+      this.db.run(`INSERT OR REPLACE INTO event_status_overrides
+        (course_id, canonical_title, status, updated_at) VALUES (?, ?, ?, ?)`, [
+        override.course_id, canonicalImportedTitle(String(override.title)), override.status, override.updated_at
+      ])
+    }
     this.persist()
   }
 
@@ -142,6 +175,20 @@ export class DatabaseService {
       if (fs.existsSync(temporaryPath)) fs.rmSync(temporaryPath, { force:true })
       if (fs.existsSync(backupTemporaryPath)) fs.rmSync(backupTemporaryPath, { force:true })
     }
+  }
+
+  private createSafetySnapshot(reason: string) {
+    if (!fs.existsSync(this.filePath)) return
+    const directory = path.join(path.dirname(this.filePath), 'backups')
+    fs.mkdirSync(directory, { recursive:true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const safeReason = reason.replace(/[^a-z0-9-]/gi, '-').replace(/-+/g, '-').slice(0, 40)
+    fs.copyFileSync(this.filePath, path.join(directory, `daily-routine.${stamp}.${safeReason}.sqlite`))
+    const snapshots = fs.readdirSync(directory)
+      .filter((name) => /^daily-routine\..+\.sqlite$/i.test(name))
+      .map((name) => ({ name, modified:fs.statSync(path.join(directory, name)).mtimeMs }))
+      .sort((a, b) => b.modified - a.modified)
+    for (const snapshot of snapshots.slice(20)) fs.rmSync(path.join(directory, snapshot.name), { force:true })
   }
 
   private reparseStoredSyllabi() {
@@ -236,6 +283,7 @@ export class DatabaseService {
   }
 
   deleteCourse(id: string) {
+    this.createSafetySnapshot('before-delete-course')
     this.db.run('DELETE FROM courses WHERE id = ?', [id])
     this.persist()
     return this.getState()
@@ -283,6 +331,10 @@ export class DatabaseService {
     const target = this.rows('SELECT id, course_id, title, due_at FROM events WHERE id = ?', [eventId])[0]
     if (!target) return
     const canonicalTitle = canonicalImportedTitle(String(target.title))
+    this.db.run(`INSERT OR REPLACE INTO event_status_overrides
+      (course_id, canonical_title, status, updated_at) VALUES (?, ?, ?, ?)`, [
+      target.course_id, canonicalTitle, status, stamp
+    ])
     const targetDueAt = Date.parse(String(target.due_at))
     const duplicateWindowMs = 12 * 60 * 60 * 1000
     for (const event of this.rows('SELECT id, title, due_at FROM events WHERE course_id = ?', [target.course_id])) {
@@ -421,6 +473,7 @@ export class DatabaseService {
   }
 
   importBrightspace(payload: BrightspacePayload) {
+    this.createSafetySnapshot('before-brightspace-sync')
     const stamp = now()
     const defaultTimezone = String(this.rows("SELECT value FROM settings WHERE key = 'defaultTimezone'")[0]?.value ?? 'America/Indiana/Indianapolis')
     const courses = this.rows('SELECT id, code FROM courses')
@@ -461,25 +514,9 @@ export class DatabaseService {
           AND source_external_id LIKE ?`, [`brightspace:%:${excludedCourseId}:%`])
       }
 
-      const retainedCourseIds = new Set(academicCourses.map((course) => `brightspace-course-${course.id}`))
-      for (const imported of this.rows("SELECT id, code, name, notes FROM courses WHERE id LIKE 'brightspace-course-%'")) {
-        const importedId = String(imported.id)
-        if (!academicCourseCode(String(imported.code), String(imported.name))) {
-          this.db.run('DELETE FROM courses WHERE id = ?', [importedId])
-          coursesRemoved++
-          continue
-        }
-        if (retainedCourseIds.has(importedId) || String(imported.notes ?? '').trim()) continue
-        const hasUserData = this.rows(`SELECT
-          (SELECT COUNT(*) FROM events WHERE course_id = ?) +
-          (SELECT COUNT(*) FROM syllabus_info WHERE course_id = ?) +
-          (SELECT COUNT(*) FROM grading_items WHERE course_id = ?) +
-          (SELECT COUNT(*) FROM detected_events WHERE course_id = ?) AS count`,
-          [importedId, importedId, importedId, importedId])[0]?.count
-        if (Number(hasUserData ?? 0) > 0) continue
-        this.db.run('DELETE FROM courses WHERE id = ?', [importedId])
-        coursesRemoved++
-      }
+      // A remote course listing is a snapshot, not a deletion instruction. Courses can
+      // disappear temporarily because of access windows, partial API responses, or a
+      // connector regression. Never cascade-delete local course data during sync.
 
       for (const item of payload.items) {
         if (!item.dueDate) { itemsWithoutDueDate++; continue }
@@ -506,7 +543,11 @@ export class DatabaseService {
         }
         const existingRaw = String(existing?.raw_text ?? '')
         const incomingRaw = String(syllabus.rawText ?? '')
-        const incomingIsRicher = !existingRaw || incomingRaw.length >= existingRaw.length
+        const existingSourcePriority = syllabusSourcePriority(String(existing?.source_external_id ?? ''))
+        const incomingSourcePriority = syllabusSourcePriority(syllabus.sourceExternalId)
+        const incomingIsRicher = !existingRaw
+          || incomingSourcePriority > existingSourcePriority
+          || (incomingSourcePriority === existingSourcePriority && incomingRaw.length >= existingRaw.length)
         const manuallyEdited = Boolean(existing?.user_edited)
         const chooseField = (column: string, incoming: string) => manuallyEdited
           ? String(existing?.[column] ?? '')
@@ -572,6 +613,7 @@ export class DatabaseService {
   }
 
   importGradescope(payload: GradescopePayload) {
+    this.createSafetySnapshot('before-gradescope-sync')
     const stamp = now()
     const defaultTimezone = String(this.rows("SELECT value FROM settings WHERE key = 'defaultTimezone'")[0]?.value ?? 'America/Indiana/Indianapolis')
     const courses = this.rows('SELECT id, code, name FROM courses')
@@ -672,7 +714,10 @@ export class DatabaseService {
     id: string; courseId: string; title: string; type: string; dueAt: string; timezone: string
     sourceType: string; sourceLabel: string; rawSourceText: string; stamp: string; status?: string
   }): 'added' | 'updated' | 'duplicate' {
-    const statusOverride = this.rows('SELECT status FROM event_status_overrides_v2 WHERE event_id = ? LIMIT 1', [input.id])[0]?.status
+    const statusOverrideById = this.rows('SELECT status FROM event_status_overrides_v2 WHERE event_id = ? LIMIT 1', [input.id])[0]?.status
+    const statusOverrideByTitle = this.rows(`SELECT status FROM event_status_overrides
+      WHERE course_id = ? AND canonical_title = ? LIMIT 1`, [input.courseId, canonicalImportedTitle(input.title)])[0]?.status
+    const statusOverride = statusOverrideById ?? statusOverrideByTitle
     const existing = this.rows('SELECT id, user_edited FROM events WHERE source_external_id = ? LIMIT 1', [input.id])[0]
     if (existing) {
       if (!Boolean(existing.user_edited)) {
@@ -707,6 +752,7 @@ export class DatabaseService {
   }
 
   resetDemo() {
+    this.createSafetySnapshot('before-reset-demo')
     this.db.run('DELETE FROM detected_events; DELETE FROM grading_items; DELETE FROM syllabus_info; DELETE FROM events; DELETE FROM courses; DELETE FROM settings;')
     this.seedDemo()
     return this.getState()
@@ -763,6 +809,29 @@ export class DatabaseService {
 
 function mapCourse(r: Row) {
   return { id:r.id, code:r.code, name:r.name, instructor:r.instructor, term:r.term, colorKey:r.color_key, timezone:r.timezone, notes:r.notes, createdAt:r.created_at, updatedAt:r.updated_at }
+}
+
+function openHealthyDatabase(SQL: Awaited<ReturnType<typeof initSqlJs>>, filePath: string): SqlDatabase | null {
+  if (!fs.existsSync(filePath)) return null
+  let database: SqlDatabase | null = null
+  try {
+    database = new SQL.Database(fs.readFileSync(filePath))
+    const result = database.exec('PRAGMA integrity_check')[0]?.values?.[0]?.[0]
+    if (result === 'ok') return database
+  } catch { /* Try the recovery copy below. */ }
+  database?.close()
+  return null
+}
+
+function copyFileAtomically(source: string, destination: string) {
+  fs.mkdirSync(path.dirname(destination), { recursive:true })
+  const temporaryPath = `${destination}.recovering`
+  try {
+    fs.copyFileSync(source, temporaryPath)
+    fs.renameSync(temporaryPath, destination)
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.rmSync(temporaryPath, { force:true })
+  }
 }
 
 function finiteNumber(value: unknown) {

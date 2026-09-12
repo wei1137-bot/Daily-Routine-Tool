@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BookOpen, ChevronRight, ExternalLink, FileText, Pencil, Plus, Upload, X } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronRight, ChevronUp, ExternalLink, FileText, Pencil, Plus, Upload, X } from 'lucide-react'
 import { DateTime } from 'luxon'
 import type { AcademicEvent, Course, EventStatus, GradingItem, SyllabusInfo } from '../domain/types'
 import { eventDateTime, sortEvents } from '../domain/event/eventUtils'
@@ -30,11 +30,12 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
   const [gradePanel, setGradePanel] = useState<GradePanel>('breakdown')
   const [gradeMode, setGradeMode] = useState<GradeDisplayMode>(gradingDisplayMode)
   const [upcomingRange, setUpcomingRange] = useState<UpcomingRange>('14')
+  const [completedExpanded, setCompletedExpanded] = useState(false)
   const [syllabusViewerOpen, setSyllabusViewerOpen] = useState(false)
   const [activeSyllabusField, setActiveSyllabusField] = useState<SyllabusField>()
   const [fieldEditing, setFieldEditing] = useState(false)
   const [fieldDraft, setFieldDraft] = useState('')
-  useEffect(() => { setNotes(course.notes); setTab('deadlines'); setUpcomingRange('14'); setSyllabusViewerOpen(false); setActiveSyllabusField(undefined); setGradePanel('breakdown') }, [course.id])
+  useEffect(() => { setNotes(course.notes); setTab('deadlines'); setUpcomingRange('14'); setCompletedExpanded(false); setSyllabusViewerOpen(false); setActiveSyllabusField(undefined); setGradePanel('breakdown') }, [course.id])
   useEffect(() => { setSyllabusDraft(syllabus ?? blankSyllabus(course.id)); setGradesDraft(gradingItems); setGradeMode(gradingDisplayMode) }, [course.id, syllabus, gradingItems, gradingDisplayMode])
   useEffect(() => {
     if (notes === course.notes) return
@@ -100,7 +101,7 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
         <div className="section-heading deadlines-heading"><div><p className="eyebrow">{t('courseSchedule')}</p><h2>{t('deadlinesAndExams')}</h2></div><button className="button primary" onClick={onAddEvent}><Plus size={16}/>{t('addEvent')}</button></div>
         <section className="event-group"><div className="group-heading"><h2>{t('upcoming')}</h2><span>{upcoming.length}</span><div className="range-selector" role="group" aria-label={t('upcoming')}>{([['14',t('twoWeeks')],['30',t('oneMonth')],['all',t('all')]] as Array<[UpcomingRange,string]>).map(([value,label]) => <button type="button" key={value} className={upcomingRange === value ? 'active' : ''} onClick={() => setUpcomingRange(value)}>{label}</button>)}</div></div>{upcoming.map((event) => <EventRow compact key={event.id} event={event} course={course} onOpen={() => onOpenEvent(event)} onStatus={(s) => onStatus(event,s)}/>)}{!upcoming.length && <p className="empty-inline">{t('noUpcomingRange')}</p>}</section>
         <section className="event-group"><div className="group-heading"><h2>{t('overdue')}</h2><span>{overdue.length}</span></div>{overdue.map((event) => <EventRow compact statusClickTarget="done" key={event.id} event={event} course={course} onOpen={() => onOpenEvent(event)} onStatus={(s) => onStatus(event,s)}/>)}{!overdue.length && <p className="empty-inline">{t('nothingOverdue')}</p>}</section>
-        <section className="event-group"><div className="group-heading"><h2>{t('completed')}</h2><span>{completed.length}</span></div>{completed.map((event) => <EventRow compact key={event.id} event={event} course={course} onOpen={() => onOpenEvent(event)} onStatus={(s) => onStatus(event,s)}/>)}{!completed.length && <p className="empty-inline">{t('nothingCompleted')}</p>}</section>
+        <section className={`event-group ${completedExpanded ? '' : 'collapsed'}`}><div className="group-heading"><button type="button" className="group-toggle" aria-expanded={completedExpanded} onClick={() => setCompletedExpanded((value) => !value)}><h2>{t('completed')}</h2><span>{completed.length}</span>{completedExpanded ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}</button></div>{completedExpanded && completed.map((event) => <EventRow compact key={event.id} event={event} course={course} onOpen={() => onOpenEvent(event)} onStatus={(s) => onStatus(event,s)}/>)}{completedExpanded && !completed.length && <p className="empty-inline">{t('nothingCompleted')}</p>}</section>
       </main>
       <aside className="deadline-sidebar">
         <section className="content-section deadline-notes"><div className="section-heading"><div><p className="eyebrow">{t('personal')}</p><h2>{t('notes')}</h2></div></div>

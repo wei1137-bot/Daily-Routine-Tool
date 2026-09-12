@@ -522,7 +522,10 @@ export class BrightspaceService {
     }
 
     if (documentText) {
-      return parseSyllabus({ courseId: course.id, text: documentText, filePath, fileName, timezone, courseName: course.name })
+      return parseSyllabus({
+        courseId: course.id, text: documentText, filePath, fileName, timezone,
+        courseName: course.name, sourceKind: 'overview-attachment'
+      })
     }
 
     const toc = await this.bearerJson(browserSession, `${baseUrl}/d2l/api/le/${LE_VERSION}/${course.id}/content/toc`, token)
@@ -569,21 +572,34 @@ export class BrightspaceService {
         })
       }
     }
-    const text = documentText || overviewText
-    if (!text) return this.fetchPurdueSimpleSyllabus(baseUrl, course, timezone)
-    return parseSyllabus({ courseId: course.id, text, filePath, fileName, timezone, courseName: course.name })
+    if (documentText) {
+      return parseSyllabus({
+        courseId: course.id, text: documentText, filePath, fileName, timezone,
+        courseName: course.name, sourceKind: 'content-file'
+      })
+    }
+
+    // A course overview is only a summary and can contain copied text from an older
+    // syllabus. Prefer the course-scoped LTI launch before treating it as a fallback.
+    const simpleSyllabus = await this.fetchPurdueSimpleSyllabus(baseUrl, course, timezone)
+    const overviewSyllabus = overviewText
+      ? parseSyllabus({
+          courseId: course.id, text: overviewText, filePath: null, fileName: null, timezone,
+          courseName: course.name, sourceKind: 'overview'
+        })
+      : null
+    const selected = chooseSyllabusSource({ simpleSyllabus, overviewSyllabus })
+    if (selected?.source === 'overview') {
+      this.writeLog('INFO', 'Using course overview as syllabus fallback', {
+        courseId: course.id, course: course.name, characters: selected.syllabus.rawText.length
+      })
+    }
+    return selected?.syllabus ?? null
   }
 
   private async fetchPurdueSimpleSyllabus(baseUrl: string, course: BrightspaceCoursePayload, timezone: string) {
     if (new URL(baseUrl).hostname.toLowerCase() !== 'purdue.brightspace.com') return null
-    const query = new URLSearchParams({
-      ou: String(course.id),
-      type: 'lti',
-      rcode: '354644E0-4CD8-419D-A32F-4E78D8778E5C-12707056',
-      srcou: '6824',
-      launchFramed: '1',
-      framedName: 'Syllabus'
-    })
+    const launchUrl = buildPurdueSimpleSyllabusUrl(baseUrl, course.id)
     const win = new BrowserWindow({
       width: 1100,
       height: 760,
@@ -597,7 +613,7 @@ export class BrightspaceService {
     })
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     try {
-      await win.loadURL(`${baseUrl}/d2l/common/dialogs/quickLink/quickLink.d2l?${query}`)
+      await win.loadURL(launchUrl)
       const deadline = Date.now() + 30_000
       let bestPage: { title: string; text: string } | null = null
       let firstReadableAt = 0
@@ -650,7 +666,8 @@ export class BrightspaceService {
           filePath: null,
           fileName: null,
           timezone,
-          courseName: course.name
+          courseName: course.name,
+          sourceKind: 'simple-syllabus'
         })
       }
       this.writeLog('INFO', 'No published Purdue Simple Syllabus found', { courseId: course.id, course: course.name })
@@ -674,6 +691,24 @@ export class BrightspaceService {
     if (payload === null) throw new Error('响应不是 JSON')
     return payload
   }
+}
+
+export function buildPurdueSimpleSyllabusUrl(baseUrl: string, courseId: number) {
+  const query = new URLSearchParams({
+    ou: String(courseId),
+    type: 'lti',
+    rcode: '354644E0-4CD8-419D-A32F-4E78D8778E5C-12707056',
+    srcou: '6824',
+    launchFramed: '1',
+    framedName: 'Syllabus'
+  })
+  return `${baseUrl}/d2l/common/dialogs/quickLink/quickLink.d2l?${query}`
+}
+
+export function chooseSyllabusSource<T>(sources: { simpleSyllabus: T | null; overviewSyllabus: T | null }) {
+  if (sources.simpleSyllabus) return { source: 'simple-syllabus' as const, syllabus: sources.simpleSyllabus }
+  if (sources.overviewSyllabus) return { source: 'overview' as const, syllabus: sources.overviewSyllabus }
+  return null
 }
 
 function parseJson(body: string): any {

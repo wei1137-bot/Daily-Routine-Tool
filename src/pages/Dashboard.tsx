@@ -16,6 +16,7 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
   const { language, locale, t, eventGroup } = useI18n()
   const [laterRange, setLaterRange] = useState<LaterRange>('14')
   const [laterExpanded, setLaterExpanded] = useState(false)
+  const [pastExpanded, setPastExpanded] = useState(false)
   const [todayClassesExpanded, setTodayClassesExpanded] = useState(true)
   const knownCourseIds = useRef(new Set(courses.map((course) => course.id)))
   const [selectedExamCourseIds, setSelectedExamCourseIds] = useState<Set<string>>(() => new Set(courses.map((course) => course.id)))
@@ -76,10 +77,12 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
             ? allItems.filter((event) => DateTime.fromISO(event.dueAt, { setZone:true }).setZone(timezone) <= laterCutoff)
             : allItems
           if (!allItems.length) return null
-          const collapsed = group === 'Later' && !laterExpanded
+          const collapsible = group === 'Later' || group === 'Past'
+          const expanded = group === 'Later' ? laterExpanded : group === 'Past' ? pastExpanded : true
+          const collapsed = collapsible && !expanded
           return <section className={`event-group ${collapsed ? 'collapsed' : ''}`} key={group}><div className="group-heading">
-            {group === 'Later'
-              ? <button type="button" className="group-toggle" aria-expanded={laterExpanded} onClick={() => setLaterExpanded((value) => !value)}><h2>{eventGroup(group)}</h2><span>{items.length}</span>{laterExpanded ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}</button>
+            {collapsible
+              ? <button type="button" className="group-toggle" aria-expanded={expanded} onClick={() => group === 'Later' ? setLaterExpanded((value) => !value) : setPastExpanded((value) => !value)}><h2>{eventGroup(group)}</h2><span>{items.length}</span>{expanded ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}</button>
               : <div className="group-label"><h2>{eventGroup(group)}</h2><span>{items.length}</span></div>}
             {group === 'Later' && laterExpanded && <div className="range-selector" role="group" aria-label={eventGroup(group)}>{([['14',t('twoWeeks')],['30',t('oneMonth')],['all',t('all')]] as Array<[LaterRange,string]>).map(([value,label]) => <button type="button" key={value} className={laterRange === value ? 'active' : ''} onClick={() => setLaterRange(value)}>{label}</button>)}</div>}
           </div>

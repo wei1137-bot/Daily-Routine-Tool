@@ -2,9 +2,48 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DatabaseService } from './database'
+import { DatabaseService, syllabusSourcePriority } from './database'
+import { parseSyllabus } from './syllabus-parser'
 
 const temporaryDirectories: string[] = []
+
+describe('syllabus source safety', () => {
+  it('treats a current Simple Syllabus as more authoritative than legacy overview text', () => {
+    expect(syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus:new')).toBeGreaterThan(
+      syllabusSourcePriority('brightspace:syllabus:1644209:legacy-hash')
+    )
+    expect(syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus:short')).toBe(
+      syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus:long')
+    )
+  })
+
+  it('replaces longer legacy overview text with a shorter course-scoped Simple Syllabus', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-syllabus-source-'))
+    temporaryDirectories.push(directory)
+    const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
+    const course = {
+      id:1644209, code:'STAT 350', name:'Fall 2026 STAT 350 Online Section - Merge',
+      isActive:true, startDate:null, endDate:null
+    }
+    const payload = (syllabus: ReturnType<typeof parseSyllabus>) => ({
+      baseUrl:'https://purdue.brightspace.com', courses:[course], items:[], syllabi:[syllabus],
+      warnings:[], excludedCourseIds:[],
+      stats:{ enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:1 }
+    })
+    database.importBrightspace(payload(parseSyllabus({
+      courseId:course.id, courseName:course.name, timezone:'America/Indiana/Indianapolis',
+      sourceKind:'unknown', text:`Old copied overview\n${'outdated material '.repeat(300)}`
+    })))
+    const currentText = 'STAT 35000 Fall 2026\nCurrent official Simple Syllabus.'
+    database.importBrightspace(payload(parseSyllabus({
+      courseId:course.id, courseName:course.name, timezone:'America/Indiana/Indianapolis',
+      sourceKind:'simple-syllabus', text:currentText
+    })))
+
+    expect(database.getState().syllabi.find((item) => item.courseId === 'brightspace-course-1644209')?.rawText)
+      .toBe(currentText)
+  })
+})
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive:true, force:true })
@@ -30,6 +69,25 @@ describe('event status persistence', () => {
     const state = database.saveEventStatus({ id:'week-1-a', status:'done' })
     const statuses = Object.fromEntries(state.events.filter((event) => event.courseId === 'test-course').map((event) => [event.id,event.status]))
     expect(statuses).toEqual({ 'week-1-a':'done', 'week-1-b':'done', 'week-2':'not_done' })
+  })
+
+  it('restores a checked status when Brightspace changes the event id', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-status-id-change-'))
+    temporaryDirectories.push(directory)
+    const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
+    const course = { id:1644209, code:'STAT 350', name:'Fall 2026 STAT 350', isActive:true, startDate:null, endDate:null }
+    const stats = { enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:0 }
+    const payload = (id: number) => ({
+      baseUrl:'https://purdue.brightspace.com', courses:[course], syllabi:[], warnings:[], excludedCourseIds:[], stats,
+      items:[{ id, courseId:course.id, title:'Quiz #1', kind:'quiz' as const, dueDate:'2026-09-14T03:59:00.000Z', url:`https://example.test/${id}` }]
+    })
+    database.importBrightspace(payload(100))
+    database.saveEventStatus({ id:'brightspace:quiz:1644209:100', status:'done' })
+    database.deleteEvent('brightspace:quiz:1644209:100')
+
+    const state = database.importBrightspace(payload(200)).state
+
+    expect(state.events.find((event) => event.id === 'brightspace:quiz:1644209:200')?.status).toBe('done')
   })
 })
 
@@ -114,5 +172,52 @@ describe('schedule persistence safety', () => {
     temporaryDirectories.push(directory)
     const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
     expect(database.getState().courses).toEqual([])
+  })
+
+  it('never deletes a local course or its timetable when a later sync omits that course', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-sync-retention-'))
+    temporaryDirectories.push(directory)
+    const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
+    const stats = { enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:0 }
+    database.importBrightspace({
+      baseUrl:'https://purdue.brightspace.com',
+      courses:[{ id:1644209, code:'STAT 350', name:'Fall 2026 STAT 350', isActive:true, startDate:null, endDate:null }],
+      items:[], syllabi:[], warnings:[], excludedCourseIds:[], stats
+    })
+    database.saveSchedule({ meetings:[{
+      id:'stat-meeting', courseId:'brightspace-course-1644209', dayOfWeek:1,
+      startTime:'09:00', endTime:'09:50', location:'Room 1', instructor:'', label:'Lecture', sourceType:'manual'
+    }], deletedIds:[] })
+
+    const result = database.importBrightspace({
+      baseUrl:'https://purdue.brightspace.com', courses:[], items:[], syllabi:[],
+      warnings:['partial course listing'], excludedCourseIds:[], stats:{ ...stats, currentCourses:0 }
+    })
+
+    expect(result.state.courses.map((course) => course.id)).toContain('brightspace-course-1644209')
+    expect(result.state.meetings).toContainEqual(expect.objectContaining({ id:'stat-meeting' }))
+    expect(result.summary.coursesRemoved).toBe(0)
+    expect(fs.readdirSync(path.join(directory, 'backups')).some((name) => name.includes('before-brightspace-sync'))).toBe(true)
+  })
+})
+
+describe('database recovery safety', () => {
+  it('restores a damaged main database from its valid backup instead of creating an empty database', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-recovery-'))
+    temporaryDirectories.push(directory)
+    const sourcePath = path.join(directory, 'source.sqlite')
+    const source = await DatabaseService.create(sourcePath)
+    source.saveCourse({
+      id:'safe-course', code:'SAFE 101', name:'Recovered course', instructor:'', term:'Fall 2026',
+      colorKey:'#123456', timezone:'America/New_York', notes:'keep me'
+    })
+    const targetPath = path.join(directory, 'target.sqlite')
+    fs.copyFileSync(sourcePath, `${targetPath}.bak`)
+    fs.writeFileSync(targetPath, 'not a sqlite database')
+
+    const recovered = await DatabaseService.create(targetPath)
+
+    expect(recovered.getState().courses).toContainEqual(expect.objectContaining({ id:'safe-course', colorKey:'#123456' }))
+    expect(fs.readdirSync(directory).some((name) => name.startsWith('target.sqlite.corrupt-'))).toBe(true)
   })
 })

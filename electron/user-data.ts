@@ -4,6 +4,13 @@ import path from 'node:path'
 export const STABLE_USER_DATA_DIRECTORY = 'Daily Routine'
 export const LEGACY_USER_DATA_DIRECTORY = 'daily-routine'
 
+export function canonicalAppDataRoot(fallbackAppDataPath: string, homeDirectory: string, platform = process.platform) {
+  if (platform === 'win32' && /^[a-z]:[\\/]/i.test(homeDirectory)) {
+    return path.join(homeDirectory, 'AppData', 'Roaming')
+  }
+  return fallbackAppDataPath
+}
+
 export function prepareStableUserData(appDataPath: string) {
   const stablePath = path.join(appDataPath, STABLE_USER_DATA_DIRECTORY)
   const legacyPath = path.join(appDataPath, LEGACY_USER_DATA_DIRECTORY)

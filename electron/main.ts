@@ -6,7 +6,7 @@ import { BrightspaceService } from './brightspace'
 import { GradescopeService } from './gradescope'
 import { recognizeScheduleImage } from './schedule-ocr'
 import { CredentialStore } from './credential-store'
-import { prepareStableUserData } from './user-data'
+import { canonicalAppDataRoot, prepareStableUserData } from './user-data'
 
 let database: DatabaseService
 let brightspace: BrightspaceService
@@ -164,7 +164,7 @@ async function runDailyRefresh() {
   await Promise.all(jobs)
 }
 
-const userData = prepareStableUserData(app.getPath('appData'))
+const userData = prepareStableUserData(canonicalAppDataRoot(app.getPath('appData'), app.getPath('home')))
 app.setPath('userData', userData.stablePath)
 const hasLock = app.requestSingleInstanceLock()
 writeStartupDiagnostic(`module loaded; single-instance lock=${hasLock ? 'acquired' : 'unavailable'}`)
@@ -177,7 +177,10 @@ else {
     else showWindow()
   })
   app.whenReady().then(async () => {
-    database = await DatabaseService.create(path.join(app.getPath('userData'), 'daily-routine.sqlite'))
+    const databasePath = userData.stableDatabase
+    database = await DatabaseService.create(databasePath)
+    const initialState = database.getState()
+    writeStartupDiagnostic(`database opened; path=${databasePath}; courses=${initialState.courses.length}; meetings=${initialState.meetings.length}; events=${initialState.events.length}; language=${initialState.settings.language ?? 'unset'}`)
     brightspace = new BrightspaceService(
       path.join(app.getPath('logs'), 'brightspace.log'),
       path.join(app.getPath('userData'), 'brightspace-syllabi')

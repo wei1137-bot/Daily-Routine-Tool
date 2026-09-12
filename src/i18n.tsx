@@ -51,7 +51,9 @@ const messages = {
     inboxClearHint:'Paste a notification email to detect deadlines that need review.', pasteEmail:'Paste email', pasteEmailHint:'Brightspace activity summaries are recognized locally. No email account or password is needed.',
     pastePlaceholder:'Paste a Brightspace notification email here…', useSample:'Use sample', detectDeadline:'Detect deadline', parsing:'Parsing…', unknownCourse:'Unknown course',
     notDone:'Not done', inProgress:'In progress', statusDone:'Done', assignment:'Assignment', quiz:'Quiz', exam:'Exam', lab:'Lab', project:'Project', discussion:'Discussion', reading:'Reading', lecture:'Lecture', officeHour:'Office hour', other:'Other',
-    opening:'Opening Daily Routine…', addFirstCourse:'Add your first course', dismiss:'Dismiss', deleteCourseConfirm:'and all its events?', deleteEventConfirm:'Delete event?'
+    opening:'Opening Daily Routine…', addFirstCourse:'Add your first course', welcomeTitle:'Welcome to Daily Routine', welcomeSubtitle:'Set up your courses',
+    onboardingBrightspace:'Connect Brightspace', onboardingBrightspaceHint:'Automatically import courses and deadlines', onboardingGradescope:'Connect Gradescope', onboardingGradescopeHint:'Import Gradescope courses and deadlines',
+    onboardingManual:'Add manually', onboardingManualHint:'Create a course yourself', dismiss:'Dismiss', deleteCourseConfirm:'and all its events?', deleteEventConfirm:'Delete event?'
     ,weeklyPlan:'Weekly plan', scheduleSubtitle:'Import a timetable screenshot or build your weekly class schedule manually.', addClass:'Add class', importScheduleImage:'Import schedule image', recognizingSchedule:'Recognizing…', scheduleImageOnly:'Please choose a PNG, JPEG, or WebP image.', dropSchedule:'Drop a timetable image here', dropScheduleHint:'Course codes, weekdays, times, and rooms are recognized locally.', recognizedClasses:'Recognized classes', reviewSchedule:'Review timetable', saveSchedule:'Save timetable', scheduleSaved:'Timetable saved locally.', selectCourse:'Select course', day:'Day', startTime:'Start time', endTime:'End time', location:'Location', classType:'Class type', noClassesRecognized:'No classes were recognized. Try a clearer image or add a class manually.', monday:'Monday', tuesday:'Tuesday', wednesday:'Wednesday', thursday:'Thursday', friday:'Friday'
   },
   zh: {
@@ -100,7 +102,9 @@ const messages = {
     inboxClearHint:'粘贴通知邮件即可识别需要检查的截止日期。', pasteEmail:'粘贴邮件', pasteEmailHint:'Brightspace 活动摘要在本机识别，无需连接邮箱或提供密码。',
     pastePlaceholder:'在此粘贴 Brightspace 通知邮件…', useSample:'使用示例', detectDeadline:'识别截止日期', parsing:'正在解析…', unknownCourse:'未知课程',
     notDone:'未完成', inProgress:'进行中', statusDone:'已完成', assignment:'作业', quiz:'测验', exam:'考试', lab:'实验', project:'项目', discussion:'讨论', reading:'阅读', lecture:'课程', officeHour:'答疑时间', other:'其他',
-    opening:'正在打开 Daily Routine…', addFirstCourse:'添加第一门课程', dismiss:'关闭', deleteCourseConfirm:'以及该课程的所有事项？', deleteEventConfirm:'删除该事项？'
+    opening:'正在打开 Daily Routine…', addFirstCourse:'添加第一门课程', welcomeTitle:'欢迎使用 Daily Routine', welcomeSubtitle:'设置你的课程',
+    onboardingBrightspace:'连接 Brightspace', onboardingBrightspaceHint:'自动导入课程和截止日期', onboardingGradescope:'连接 Gradescope', onboardingGradescopeHint:'导入 Gradescope 课程和截止日期',
+    onboardingManual:'手动添加', onboardingManualHint:'自行创建一门课程', dismiss:'关闭', deleteCourseConfirm:'以及该课程的所有事项？', deleteEventConfirm:'删除该事项？'
     ,weeklyPlan:'每周安排', scheduleSubtitle:'上传课程表截图自动识别，也可以手动建立每周课程表。', addClass:'添加课程时段', importScheduleImage:'导入课程表图片', recognizingSchedule:'正在识别…', scheduleImageOnly:'请选择 PNG、JPEG 或 WebP 图片。', dropSchedule:'将课程表图片拖到这里', dropScheduleHint:'课程代码、星期、时间和教室均在本机识别。', recognizedClasses:'识别结果', reviewSchedule:'检查课程表', saveSchedule:'保存课程表', scheduleSaved:'课程表已保存到本机。', selectCourse:'选择课程', day:'星期', startTime:'开始时间', endTime:'结束时间', location:'教室', classType:'课程类型', noClassesRecognized:'没有识别到课程，请换一张更清晰的图片或手动添加。', monday:'星期一', tuesday:'星期二', wednesday:'星期三', thursday:'星期四', friday:'星期五'
   }
 } as const

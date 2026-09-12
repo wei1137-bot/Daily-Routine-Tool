@@ -10,8 +10,10 @@ import { CoursePage } from './pages/CoursePage'
 import { SchedulePage } from './pages/SchedulePage'
 import { CalendarPage } from './pages/CalendarPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { OnboardingPage } from './pages/OnboardingPage'
 import { mergeDuplicateEvents } from './domain/event/eventUtils'
 import { I18nProvider, tr, type Language } from './i18n'
+import { importBrightspaceForOnboarding, importGradescopeForOnboarding } from './services/onboarding'
 
 const empty: AppState = { courses: [], events: [], syllabi: [], gradingItems: [], meetings: [], detectedEvents: [], eventPlans: [], settings: {} }
 
@@ -33,11 +35,29 @@ export function App() {
   }, [accentColor])
 
   const refreshState = useCallback(async () => {
-    try { setState(await window.dailyRoutine.getState()) }
+    try { setState(await window.dailyRoutine.getState()); setError(undefined) }
     catch (e) { setError(String(e)) }
   }, [])
 
-  useEffect(() => { refreshState().finally(() => setLoading(false)) }, [refreshState])
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      let lastError: unknown
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const latest = await window.dailyRoutine.getState()
+          if (!cancelled) { setState(latest); setError(undefined) }
+          return
+        } catch (error) {
+          lastError = error
+          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)))
+        }
+      }
+      if (!cancelled) setError(String(lastError))
+    }
+    void load().finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
   useEffect(() => window.dailyRoutine.onBrightspaceSync(
     () => { void refreshState() },
     (message) => setError(`Brightspace background sync: ${message}`)
@@ -61,6 +81,13 @@ export function App() {
     catch (e) { setError(e instanceof Error ? e.message : String(e)); throw e }
   }, [])
   const saveCourse = useCallback((course: Course) => { void perform(() => window.dailyRoutine.saveCourse(course)) }, [perform])
+  const connectBrightspaceForOnboarding = async () => {
+    const baseUrl = state.settings.brightspaceBaseUrl ?? 'https://purdue.brightspace.com'
+    setState(await importBrightspaceForOnboarding(window.dailyRoutine, baseUrl))
+  }
+  const connectGradescopeForOnboarding = async () => {
+    setState(await importGradescopeForOnboarding(window.dailyRoutine))
+  }
   const saveEvent = (event: AcademicEvent) => { void perform(() => window.dailyRoutine.saveEvent({ ...event, userEdited: true })); setEventModal(null) }
   const statusEvent = (event: AcademicEvent, status: EventStatus) => void perform(() => window.dailyRoutine.saveEventStatus({ id:event.id, status }))
   const navigate = (next: Page, id?: string) => { setPage(next); if (id) setCourseId(id) }
@@ -68,7 +95,17 @@ export function App() {
   const displayEvents = useMemo(() => mergeDuplicateEvents(state.events), [state.events])
 
   if (loading) return <I18nProvider language={language}><div className="app-status"><Loader2 className="spin"/><span>{tr(language,'opening')}</span></div></I18nProvider>
-  if (!state.courses.length && !error) return <I18nProvider language={language}><div className="app-status"><button className="button primary" onClick={() => setCourseModal('new')}>{tr(language,'addFirstCourse')}</button>{courseModal && <CourseModal defaultTimezone={defaultTimezone} defaultTerm={defaultTerm} onClose={() => setCourseModal(null)} onSave={(course) => { saveCourse(course); setCourseModal(null) }}/>}</div></I18nProvider>
+  if (error && !state.courses.length) return <I18nProvider language="zh"><div className="app-status"><AlertTriangle/><strong>数据加载失败，但数据库没有被清空</strong><span>{error}</span><button className="button primary" onClick={() => { setLoading(true); void refreshState().finally(() => setLoading(false)) }}>重新读取</button></div></I18nProvider>
+  if (!state.courses.length && !error) return <I18nProvider language={language}>
+    <OnboardingPage
+      onConnectBrightspace={connectBrightspaceForOnboarding}
+      onConnectGradescope={connectGradescopeForOnboarding}
+      onAddManually={() => setCourseModal('new')}
+    />
+    {courseModal && (
+      <CourseModal defaultTimezone={defaultTimezone} defaultTerm={defaultTerm} onClose={() => setCourseModal(null)} onSave={(course) => { saveCourse(course); setCourseModal(null) }}/>
+    )}
+  </I18nProvider>
 
   return <I18nProvider language={language}><div className="app-shell">
     <Sidebar page={page} courses={state.courses} activeCourseId={activeCourse?.id} onNavigate={navigate} onAddCourse={() => setCourseModal('new')}/>

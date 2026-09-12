@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import initSqlJs from 'sql.js'
 import { afterEach, describe, expect, it } from 'vitest'
-import { prepareStableUserData } from './user-data'
+import { canonicalAppDataRoot, prepareStableUserData } from './user-data'
 
 const temporaryDirectories: string[] = []
 
@@ -20,6 +20,14 @@ async function sqliteBytes(marker: string) {
 }
 
 describe('stable user data directory', () => {
+  it('uses one absolute roaming directory on Windows regardless of the launcher app-data path', () => {
+    expect(canonicalAppDataRoot(
+      'C:\\Users\\me\\AppData\\Local\\Packages\\Launcher\\LocalCache\\Roaming',
+      'C:\\Users\\me',
+      'win32'
+    )).toBe(path.join('C:\\Users\\me', 'AppData', 'Roaming'))
+  })
+
   it('imports a valid legacy database only when the stable database is absent', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-user-data-'))
     temporaryDirectories.push(directory)

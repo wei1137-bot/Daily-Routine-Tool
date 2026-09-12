@@ -4,6 +4,7 @@ import { DateTime } from 'luxon'
 
 export interface ParsedSyllabus {
   courseId: number
+  sourceKind: SyllabusSourceKind
   sourceExternalId: string
   filePath: string | null
   fileName: string | null
@@ -16,6 +17,8 @@ export interface ParsedSyllabus {
   gradingItems: Array<{ id: string; label: string; weight: number }>
   events: Array<{ id: string; title: string; type: 'exam'; dueAt: string }>
 }
+
+export type SyllabusSourceKind = 'overview-attachment' | 'content-file' | 'simple-syllabus' | 'overview' | 'unknown'
 
 export async function extractPdfText(data: Buffer) {
   const parser = new PDFParse({ data })
@@ -34,10 +37,12 @@ export function parseSyllabus(input: {
   fileName?: string | null
   timezone: string
   courseName: string
+  sourceKind?: SyllabusSourceKind
 }) : ParsedSyllabus {
   const text = normalizeText(input.text)
+  const sourceKind = input.sourceKind ?? 'unknown'
   const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 20)
-  const sourceExternalId = `brightspace:syllabus:${input.courseId}:${fingerprint}`
+  const sourceExternalId = `brightspace:syllabus:${input.courseId}:${sourceKind}:${fingerprint}`
   const rawSummary = firstNonEmpty(
     sectionAny(text, ['Course Description', 'Course Overview', 'Catalog Description', 'About This Course'],
       ['Course Learning Outcomes', 'Learning Objectives', 'Prerequisites', 'Instructor Contact Information']),
@@ -60,6 +65,7 @@ export function parseSyllabus(input: {
   const events = extractExamEvents(text, input.courseId, input.courseName, input.timezone)
   return {
     courseId: input.courseId,
+    sourceKind,
     sourceExternalId,
     filePath: input.filePath ?? null,
     fileName: input.fileName ?? null,
