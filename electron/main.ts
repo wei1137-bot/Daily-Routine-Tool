@@ -2,12 +2,15 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron'
 import { DatabaseService } from './database'
-import { BrightspaceService } from './brightspace'
-import { GradescopeService } from './gradescope'
+import { BRIGHTSPACE_SESSION_PARTITION, BrightspaceService } from './brightspace'
+import { GRADESCOPE_SESSION_PARTITION, GradescopeService } from './gradescope'
 import { recognizeScheduleImage } from './schedule-ocr'
 import { CredentialStore } from './credential-store'
 import { canonicalAppDataRoot, prepareStableUserData } from './user-data'
 import { trayLabels } from './tray-menu'
+import { macApplicationMenuTemplate } from './app-menu'
+import { hidesMainWindowOnClose, usesMacApplicationMenu } from './platform'
+import { assertTesseractLanguageData, runtimeAssetPath, tesseractLanguagePath } from './runtime-resources'
 
 let database: DatabaseService
 let brightspace: BrightspaceService
@@ -15,6 +18,8 @@ let gradescope: GradescopeService
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let quitPrepared = false
+let quitPreparation: Promise<void> | null = null
 let brightspaceSyncInFlight: Promise<ReturnType<DatabaseService['importBrightspace']>> | null = null
 let gradescopeSyncInFlight: Promise<ReturnType<DatabaseService['importGradescope']>> | null = null
 let dailyRefreshTimer: NodeJS.Timeout | null = null
@@ -29,25 +34,42 @@ function writeStartupDiagnostic(message: string) {
   } catch { /* Startup diagnostics must never prevent the app from opening. */ }
 }
 
-const runtimeAssetPath = (name: string) => app.isPackaged
-  ? path.join(process.resourcesPath, name)
-  : path.join(__dirname, '..', name === 'icon.ico' ? 'build' : 'public', name)
+const resourceContext = () => ({
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  appRoot: path.join(__dirname, '..')
+})
+
+const assetPath = (name: string) => runtimeAssetPath(name, resourceContext())
 
 function showWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (!mainWindow || mainWindow.isDestroyed()) return false
   mainWindow.show()
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.focus()
+  return true
 }
 
-async function quitForUpdate() {
+async function showOrCreateWindow() {
+  if (!showWindow() && database) await createWindow()
+}
+
+async function prepareToQuit() {
   isQuitting = true
   if (dailyRefreshTimer) clearInterval(dailyRefreshTimer)
-  await Promise.allSettled([
-    session.fromPartition('persist:brightspace').flushStorageData(),
-    session.fromPartition('persist:gradescope').flushStorageData()
-  ])
-  app.quit()
+  if (app.isReady()) {
+    await Promise.allSettled([
+      session.fromPartition(BRIGHTSPACE_SESSION_PARTITION).flushStorageData(),
+      session.fromPartition(GRADESCOPE_SESSION_PARTITION).flushStorageData()
+    ])
+  }
+  quitPrepared = true
+}
+
+function requestQuit() {
+  if (quitPrepared) { app.quit(); return }
+  quitPreparation ??= prepareToQuit()
+  void quitPreparation.finally(() => app.quit())
 }
 
 async function createWindow() {
@@ -57,9 +79,8 @@ async function createWindow() {
     height: 900,
     minWidth: 980,
     minHeight: 650,
-    icon: runtimeAssetPath(process.platform === 'win32' ? 'icon.ico' : 'app-icon.png'),
+    icon: assetPath(process.platform === 'win32' ? 'icon.ico' : 'app-icon.png'),
     backgroundColor: '#f7f8fa',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -71,10 +92,10 @@ async function createWindow() {
       devTools: !app.isPackaged
     }
   })
-  mainWindow.setMenuBarVisibility(false)
+  if (!usesMacApplicationMenu()) mainWindow.setMenuBarVisibility(false)
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.on('close', (event) => {
-    if (!isQuitting) { event.preventDefault(); mainWindow?.hide() }
+    if (!isQuitting && hidesMainWindowOnClose()) { event.preventDefault(); mainWindow?.hide() }
   })
   mainWindow.on('closed', () => { mainWindow = null })
   if (process.env.VITE_DEV_SERVER_URL) await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
@@ -83,21 +104,25 @@ async function createWindow() {
 
 function createTray() {
   if (tray) return
-  const trayImage = nativeImage.createFromPath(runtimeAssetPath('app-icon.png')).resize({ width: 20, height: 20 })
+  const traySize = usesMacApplicationMenu() ? 18 : 20
+  const trayImage = nativeImage.createFromPath(assetPath('app-icon.png')).resize({ width: traySize, height: traySize })
+  if (usesMacApplicationMenu()) trayImage.setTemplateImage(true)
   tray = new Tray(trayImage)
   tray.setToolTip('Daily Routine')
   updateTrayMenu()
-  tray.on('click', showWindow)
-  tray.on('double-click', showWindow)
+  if (!usesMacApplicationMenu()) {
+    tray.on('click', () => { void showOrCreateWindow() })
+    tray.on('double-click', () => { void showOrCreateWindow() })
+  }
 }
 
 function updateTrayMenu(language = database.getState().settings.language) {
   if (!tray) return
   const labels = trayLabels(language)
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: labels.open, click: showWindow },
+    { label: labels.open, click: () => { void showOrCreateWindow() } },
     { type: 'separator' },
-    { label: labels.quit, click: () => { isQuitting = true; app.quit() } }
+    { label: labels.quit, click: requestQuit }
   ]))
 }
 
@@ -176,14 +201,18 @@ app.setPath('userData', userData.stablePath)
 const hasLock = app.requestSingleInstanceLock()
 writeStartupDiagnostic(`module loaded; single-instance lock=${hasLock ? 'acquired' : 'unavailable'}`)
 if (userData.databaseMigrated) writeStartupDiagnostic(`migrated legacy database from ${userData.legacyDatabase}`)
-if (!hasLock) app.quit()
+if (!hasLock) { isQuitting = true; app.quit() }
 else {
   app.setAppUserModelId('com.dailyroutine.desktop')
   app.on('second-instance', (_event, argv) => {
-    if (argv.includes('--quit-for-update')) void quitForUpdate()
-    else showWindow()
+    if (argv.includes('--quit-for-update')) requestQuit()
+    else void showOrCreateWindow()
   })
   app.whenReady().then(async () => {
+    if (usesMacApplicationMenu()) {
+      Menu.setApplicationMenu(Menu.buildFromTemplate(macApplicationMenuTemplate(app.isPackaged)))
+      if (!app.isPackaged) app.dock?.setIcon(assetPath('logo.png'))
+    }
     const databasePath = userData.stableDatabase
     database = await DatabaseService.create(databasePath)
     const initialState = database.getState()
@@ -209,9 +238,13 @@ else {
     app.quit()
   })
 }
-app.on('before-quit', () => { isQuitting = true; if (dailyRefreshTimer) clearInterval(dailyRefreshTimer) })
-app.on('window-all-closed', () => { /* Keep running in the system tray. */ })
-app.on('activate', () => { void createWindow() })
+app.on('before-quit', (event) => {
+  if (quitPrepared) return
+  event.preventDefault()
+  requestQuit()
+})
+app.on('window-all-closed', () => { /* Windows stays in the tray; macOS stays available from the Dock/menu bar. */ })
+app.on('activate', () => { void showOrCreateWindow() })
 
 ipcMain.handle('db:get-state', () => database.getState())
 ipcMain.handle('db:save-course', (_e, value) => database.saveCourse(value))
@@ -275,6 +308,7 @@ ipcMain.handle('schedule:recognize-image', async (_e, payload: { bytes: Uint8Arr
   const bytes = Buffer.from(payload.bytes)
   if (!bytes.length || bytes.length > 15 * 1024 * 1024) throw new Error('Please choose an image smaller than 15 MB.')
   const englishData = require('@tesseract.js-data/eng') as { langPath: string }
-  const langPath = app.isPackaged ? path.join(process.resourcesPath, 'tessdata') : englishData.langPath
+  const langPath = tesseractLanguagePath(resourceContext(), englishData.langPath)
+  assertTesseractLanguageData(langPath)
   return recognizeScheduleImage(bytes, payload.name, database.getState().courses.map((course) => String(course.code)), langPath)
 })

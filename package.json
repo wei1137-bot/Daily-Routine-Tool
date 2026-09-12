@@ -11,8 +11,11 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "vitest run",
     "build": "vite build && tsc -p tsconfig.electron.json",
-    "pack:win": "electron-builder --win --dir",
-    "dist:win": "electron-builder --win nsis",
+    "generate:mac-icon": "node scripts/generate-mac-icon.cjs",
+    "pack:win": "pnpm build && electron-builder --win --dir",
+    "dist:win": "pnpm build && electron-builder --win nsis",
+    "pack:mac": "pnpm build && electron-builder --mac --dir --arm64 --x64",
+    "dist:mac": "pnpm build && electron-builder --mac dmg --arm64 --x64",
     "start": "electron ."
   },
   "dependencies": {
@@ -70,11 +73,20 @@
     ],
     "asarUnpack": [
       "node_modules/tesseract.js/**/*",
-      "node_modules/tesseract.js-core/**/*"
+      "node_modules/tesseract.js-core/**/*",
+      "node_modules/@napi-rs/canvas*/**/*"
     ],
+    "afterPack": "scripts/verify-packaged-resources.cjs",
     "win": {
       "icon": "build/icon.ico",
       "target": "nsis"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "target": "dmg",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }
 }

@@ -3,8 +3,9 @@ import path from 'node:path'
 import { BrowserWindow, session, type Session } from 'electron'
 import { extractPdfText, parseSyllabus, type ParsedSyllabus } from './syllabus-parser'
 import { academicCourseCode } from './course-code'
+import { configureAuthenticationPopups, persistentSessionWebPreferences } from './authentication-window'
 
-const PARTITION = 'persist:brightspace'
+export const BRIGHTSPACE_SESSION_PARTITION = 'persist:brightspace'
 const LP_VERSION = '1.62'
 const LE_VERSION = '1.96'
 const EXPIRED_MARKER = 'sessionExpired=1'
@@ -66,7 +67,7 @@ export class BrightspaceService {
   }
 
   private browserSession(): Session {
-    return session.fromPartition(PARTITION)
+    return session.fromPartition(BRIGHTSPACE_SESSION_PARTITION)
   }
 
   normalizeBaseUrl(value: string) {
@@ -261,13 +262,9 @@ export class BrightspaceService {
       show: visible,
       title: '登录 Brightspace — Daily Routine',
       autoHideMenuBar: true,
-      webPreferences: {
-        partition: PARTITION,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true
-      }
+      webPreferences: persistentSessionWebPreferences(BRIGHTSPACE_SESSION_PARTITION)
     })
+    configureAuthenticationPopups(win, BRIGHTSPACE_SESSION_PARTITION)
     if (visible) this.loginWindow = win
 
     const homeUrl = `${baseUrl}/d2l/home`
@@ -604,12 +601,7 @@ export class BrightspaceService {
       width: 1100,
       height: 760,
       show: false,
-      webPreferences: {
-        partition: PARTITION,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true
-      }
+      webPreferences: persistentSessionWebPreferences(BRIGHTSPACE_SESSION_PARTITION)
     })
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     try {

@@ -203,7 +203,7 @@ export function SettingsPage({ courses, settings, onSaveSetting, onStateChange, 
     </div>
     {showCredentials && <Modal title={t('configureAutoLogin')} onClose={() => { if (!credentialBusy) { setShowCredentials(false); setCredentialPassword(''); setCredentialError(undefined) } }}>
       <form onSubmit={(event) => { event.preventDefault(); void saveAutoLogin() }}>
-        <p className="credential-explainer">{language === 'zh' ? '账号和密码会由 Windows DPAPI 加密后保存在本机，不会写入数据库或日志。保存前会先尝试登录以确认凭据有效。' : 'Your credentials are encrypted locally with Windows DPAPI. They are never stored in the database or logs, and will be verified before saving.'}</p>
+        <p className="credential-explainer">{language === 'zh' ? '账号和密码会由操作系统安全存储（macOS 钥匙串或 Windows DPAPI）加密后保存在本机，不会写入数据库或日志。保存前会先尝试登录以确认凭据有效。' : 'Your credentials are encrypted by the operating system (macOS Keychain or Windows DPAPI). They are never stored in the database or logs, and will be verified before saving.'}</p>
         <label>{t('gradescopeEmail')}<input type="email" autoComplete="username" required autoFocus value={credentialEmail} onChange={(event) => setCredentialEmail(event.target.value)} placeholder="name@example.edu"/></label>
         <label>{t('gradescopePassword')}<input type="password" autoComplete="current-password" required value={credentialPassword} onChange={(event) => setCredentialPassword(event.target.value)}/></label>
         {credentialError && <div className="integration-message error"><span>{credentialError}</span></div>}

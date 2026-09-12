@@ -24,8 +24,8 @@ Daily Routine is a local-first desktop academic dashboard for courses, deadlines
 - Real SQLite storage powered by `sql.js`, persisted as a local `.sqlite` file
 - Realistic Fall 2026 demo data and one-click reset
 - Isolated Gmail and Outlook adapter extension points
-- Windows application, window, and system-tray icon using the supplied custom artwork
-- Closing the main window hides it to the tray; click the tray icon to restore it or use its menu to exit
+- Windows and macOS application icons generated from the supplied artwork
+- Windows keeps its existing close-to-tray behavior; on macOS, closing the window leaves the app available in the Dock and menu bar and clicking the Dock icon reopens it
 
 Daily Routine never asks for or stores a Brightspace password. Brightspace sign-in happens on the provider's real page; Electron keeps only that dedicated browser session in the local app profile so later syncs can usually renew silently.
 
@@ -44,6 +44,8 @@ pnpm dev
 
 The `dev` command starts Vite and then opens the Electron desktop window.
 
+On macOS, both Apple Silicon and Intel Electron builds are supported. The app uses the normal macOS application menu and keyboard roles, and the menu-bar icon follows the system template-icon appearance.
+
 On this Windows workspace, a **Daily Routine** shortcut is also created on the desktop. It launches without leaving a PowerShell window open.
 
 ## Quality and build commands
@@ -53,9 +55,16 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm start
+pnpm pack:win
+pnpm dist:win
+pnpm pack:mac
+pnpm dist:mac
 ```
 
 Run `pnpm build` before `pnpm start`. The production renderer is written to `dist/` and Electron code to `dist-electron/`.
+The packaging commands run the production build themselves. `pack:*` creates an unpacked application for smoke testing; `dist:win` keeps the NSIS installer, while `dist:mac` creates separate Apple Silicon and Intel `.app` bundles and `.dmg` installers under `release/`.
+
+macOS packages are intentionally unsigned and not notarized. Signing can be added later without changing the application identifier or package layout.
 
 ## Local database
 
@@ -65,6 +74,8 @@ The database is named `daily-routine.sqlite` inside Electron's platform-specific
 - macOS: `~/Library/Application Support/Daily Routine/daily-routine.sqlite`
 
 The exact active path appears under **Settings → Data** in the app.
+
+Brightspace and Gradescope browser cookies remain in their dedicated persistent Electron partitions under this same user-data directory. Downloaded Brightspace syllabus files are stored under `brightspace-syllabi/`; credentials are outside SQLite and are encrypted with Electron `safeStorage` (Windows DPAPI or macOS Keychain). If secure storage is unavailable, automatic-login credentials are not saved—there is no plaintext fallback.
 
 ## Brightspace sync
 
@@ -108,7 +119,26 @@ The renderer never accesses the filesystem or database directly; a narrow contex
 - Gradescope's student dashboard markup is not a public API and may require a connector update if Gradescope changes its HTML structure.
 - Brightspace API versions and institution SSO pages can change; use **Connect / re-login** if a saved session no longer renews.
 - `.eml` import, notifications, cloud sync, and sharing UI are out of scope.
-- The app is runnable from source but is not yet packaged into signed installers.
+- Distributed macOS builds are not yet code-signed or notarized.
+
+## macOS verification
+
+Run these commands in a fresh checkout on a Mac:
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm dev
+pnpm pack:mac
+pnpm dist:mac
+```
+
+`pack:mac` and `dist:mac` build both `arm64` and `x64`. The packaging hook fails the build if the app icon, Tesseract language data/worker/core, SQLite WASM, PDF parser/worker, or architecture-matched PDF canvas native module is missing.
+
+On the Mac, smoke-test both the development app and the unpacked `.app`: close and reopen the main window from the Dock, use **Daily Routine → Quit**, open the menu-bar menu, launch a second instance and confirm the first window is focused, log in to Brightspace and Gradescope, quit/relaunch and confirm both sessions persist, save/restore Gradescope automatic login through Keychain, open a downloaded syllabus PDF, and run timetable image recognition. Use `file` on the executable inside each `.app` if you want to confirm its `arm64` or `x86_64` architecture.
 
 ## Future integrations
 

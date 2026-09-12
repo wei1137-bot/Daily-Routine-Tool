@@ -2,6 +2,12 @@ import { createHash } from 'node:crypto'
 import { PDFParse } from 'pdf-parse'
 import { DateTime } from 'luxon'
 
+const { getData: getPdfWorkerData } = require('pdf-parse/worker') as { getData: () => string }
+
+// Electron packages application code in ASAR. An embedded worker avoids depending
+// on a current working directory or a dynamically imported file beside the ASAR.
+PDFParse.setWorker(getPdfWorkerData())
+
 export interface ParsedSyllabus {
   courseId: number
   sourceKind: SyllabusSourceKind

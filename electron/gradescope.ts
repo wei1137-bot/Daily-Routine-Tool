@@ -4,9 +4,10 @@ import { BrowserWindow, session, type Session } from 'electron'
 import { DateTime } from 'luxon'
 import { academicCourseCode, normalizeCourseCode, normalizedCourseName } from './course-code'
 import { CredentialStore, type GradescopeCredentials } from './credential-store'
+import { configureAuthenticationPopups, persistentSessionWebPreferences } from './authentication-window'
 
 const BASE_URL = 'https://www.gradescope.com'
-const PARTITION = 'persist:gradescope'
+export const GRADESCOPE_SESSION_PARTITION = 'persist:gradescope'
 
 export interface GradescopeCoursePayload {
   id: number
@@ -53,7 +54,7 @@ export class GradescopeService {
   }
 
   private browserSession(): Session {
-    return session.fromPartition(PARTITION)
+    return session.fromPartition(GRADESCOPE_SESSION_PARTITION)
   }
 
   async getStatus(): Promise<GradescopeStatus> {
@@ -259,7 +260,7 @@ export class GradescopeService {
   }
 
   private createWindow(visible: boolean) {
-    return new BrowserWindow({
+    const win = new BrowserWindow({
       width: 1000,
       height: 760,
       minWidth: 720,
@@ -267,8 +268,10 @@ export class GradescopeService {
       show: visible,
       title: '登录 Gradescope — Daily Routine',
       autoHideMenuBar: true,
-      webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true }
+      webPreferences: persistentSessionWebPreferences(GRADESCOPE_SESSION_PARTITION)
     })
+    configureAuthenticationPopups(win, GRADESCOPE_SESSION_PARTITION)
+    return win
   }
 
   private async ensureAuthenticated(win: BrowserWindow, allowAutomaticLogin: boolean) {

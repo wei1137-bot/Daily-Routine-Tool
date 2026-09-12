@@ -28,6 +28,11 @@ describe('stable user data directory', () => {
     )).toBe(path.join('C:\\Users\\me', 'AppData', 'Roaming'))
   })
 
+  it('uses the normal macOS Application Support root without rewriting it', () => {
+    const applicationSupport = '/Users/me/Library/Application Support'
+    expect(canonicalAppDataRoot(applicationSupport, '/Users/me', 'darwin')).toBe(applicationSupport)
+  })
+
   it('imports a valid legacy database only when the stable database is absent', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-user-data-'))
     temporaryDirectories.push(directory)
