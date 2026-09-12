@@ -1,0 +1,187 @@
+import { useEffect, useMemo, useState } from 'react'
+import { BookOpen, ChevronRight, ExternalLink, FileText, Pencil, Plus, Upload, X } from 'lucide-react'
+import { DateTime } from 'luxon'
+import type { AcademicEvent, Course, EventStatus, GradingItem, SyllabusInfo } from '../domain/types'
+import { eventDateTime, sortEvents } from '../domain/event/eventUtils'
+import { EventRow } from '../components/EventRow'
+import { courseColorClass, courseColorStyle } from '../domain/courseColor'
+import { useI18n } from '../i18n'
+import { Modal } from '../components/Modal'
+import { SyllabusDocument } from '../components/SyllabusDocument'
+
+type Tab = 'deadlines' | 'syllabus'
+type UpcomingRange = '14' | '30' | 'all'
+type SyllabusField = 'rawSummary' | 'officeHours' | 'attendancePolicy' | 'latePolicy'
+type GradePanel = 'breakdown' | 'planner'
+type GradeDisplayMode = 'percentage' | 'points'
+
+export function CoursePage({ course, events, syllabus, gradingItems, gradingDisplayMode, onSaveCourse, onEditCourse, onAddEvent, onAddExam, onOpenEvent, onStatus, onSaveSyllabus, onSaveGrades }: {
+  course: Course; events: AcademicEvent[]; syllabus?: SyllabusInfo; gradingItems: GradingItem[]
+  gradingDisplayMode: GradeDisplayMode
+  onSaveCourse: (course: Course) => void; onEditCourse: () => void; onAddEvent: () => void; onAddExam: () => void
+  onOpenEvent: (event: AcademicEvent) => void; onStatus: (event: AcademicEvent, status: EventStatus) => void
+  onSaveSyllabus: (value: SyllabusInfo) => void; onSaveGrades: (items: GradingItem[], displayMode: GradeDisplayMode) => void
+}) {
+  const { locale, t, courseName, termName } = useI18n()
+  const [tab, setTab] = useState<Tab>('deadlines')
+  const [notes, setNotes] = useState(course.notes)
+  const [syllabusDraft, setSyllabusDraft] = useState<SyllabusInfo>(syllabus ?? blankSyllabus(course.id))
+  const [gradesDraft, setGradesDraft] = useState<GradingItem[]>(gradingItems)
+  const [gradePanel, setGradePanel] = useState<GradePanel>('breakdown')
+  const [gradeMode, setGradeMode] = useState<GradeDisplayMode>(gradingDisplayMode)
+  const [upcomingRange, setUpcomingRange] = useState<UpcomingRange>('14')
+  const [syllabusViewerOpen, setSyllabusViewerOpen] = useState(false)
+  const [activeSyllabusField, setActiveSyllabusField] = useState<SyllabusField>()
+  const [fieldEditing, setFieldEditing] = useState(false)
+  const [fieldDraft, setFieldDraft] = useState('')
+  useEffect(() => { setNotes(course.notes); setTab('deadlines'); setUpcomingRange('14'); setSyllabusViewerOpen(false); setActiveSyllabusField(undefined); setGradePanel('breakdown') }, [course.id])
+  useEffect(() => { setSyllabusDraft(syllabus ?? blankSyllabus(course.id)); setGradesDraft(gradingItems); setGradeMode(gradingDisplayMode) }, [course.id, syllabus, gradingItems, gradingDisplayMode])
+  useEffect(() => {
+    if (notes === course.notes) return
+    const timer = setTimeout(() => onSaveCourse({ ...course, notes }), 650)
+    return () => clearTimeout(timer)
+  }, [notes, course, onSaveCourse])
+  const sorted = useMemo(() => sortEvents(events), [events])
+  const now = DateTime.now().setZone(course.timezone)
+  const today = now.startOf('day')
+  const allUpcoming = sorted.filter((e) => e.status !== 'done' && DateTime.fromISO(e.dueAt, { setZone: true }).setZone(course.timezone) >= now)
+  const cutoff = upcomingRange === 'all' ? null : today.plus({ days: Number(upcomingRange) }).endOf('day')
+  const upcoming = cutoff ? allUpcoming.filter((e) => DateTime.fromISO(e.dueAt, { setZone: true }).setZone(course.timezone) <= cutoff) : allUpcoming
+  const completed = sorted.filter((e) => e.status === 'done')
+  const overdue = sorted.filter((e) => e.status !== 'done' && DateTime.fromISO(e.dueAt, { setZone: true }).setZone(course.timezone) < now)
+  const nextExam = allUpcoming.find((e) => e.type === 'exam')
+  const attach = async () => {
+    const file = await window.dailyRoutine.chooseSyllabus()
+    if (file) {
+      const next = { ...syllabusDraft, ...file }
+      setSyllabusDraft(next)
+      onSaveSyllabus(next)
+    }
+  }
+  const syllabusFields: Array<{ key: SyllabusField; label: string; placeholder: string }> = [
+    { key:'rawSummary', label:t('courseSummary'), placeholder:t('summaryPlaceholder') },
+    { key:'officeHours', label:t('officeHours'), placeholder:t('noDetailsYet') },
+    { key:'attendancePolicy', label:t('attendancePolicy'), placeholder:t('noDetailsYet') },
+    { key:'latePolicy', label:t('latePolicy'), placeholder:t('noDetailsYet') }
+  ]
+  const openSyllabusField = (key: SyllabusField) => {
+    setActiveSyllabusField(key)
+    setFieldDraft(syllabusDraft[key])
+    setFieldEditing(false)
+  }
+  const closeSyllabusField = () => { setActiveSyllabusField(undefined); setFieldEditing(false) }
+  const saveSyllabusField = () => {
+    if (!activeSyllabusField) return
+    const next = { ...syllabusDraft, [activeSyllabusField]:fieldDraft }
+    setSyllabusDraft(next)
+    onSaveSyllabus(next)
+    closeSyllabusField()
+  }
+  const activeFieldDefinition = syllabusFields.find((field) => field.key === activeSyllabusField)
+  const setGradeValue = (index: number, patch: Partial<GradingItem>) => setGradesDraft((all) => all.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
+  const addGradeItem = () => setGradesDraft((all) => [...all, {
+    id:crypto.randomUUID(), courseId:course.id, label:t('category'), weight:0, points:null,
+    targetPoints:null, currentPoints:null, currentMode:'earned', userEdited:true
+  }])
+  const percentageTotal = gradesDraft.reduce((sum, item) => sum + Number(item.weight || 0), 0)
+  const pointsTotal = gradesDraft.reduce((sum, item) => sum + Number(item.points || 0), 0)
+  const targetTotal = gradesDraft.reduce((sum, item) => sum + Number(item.targetPoints || 0), 0)
+  const currentValues = gradesDraft.filter((item) => item.currentPoints !== null && item.currentPoints !== undefined).map((item) => item.currentMode === 'lost'
+    ? Math.max(0, Number(item.points || 0) - Number(item.currentPoints || 0))
+    : Number(item.currentPoints || 0))
+  const currentTotal = currentValues.reduce((sum, value) => sum + value, 0)
+  const score = (value: number) => Number.isInteger(value) ? String(value) : value.toFixed(1)
+  return <div className="page course-page">
+    <header className="course-hero"><div><div className="course-code-line"><span className={`course-swatch ${courseColorClass(course.colorKey)}`} style={courseColorStyle(course.colorKey)}/><span>{course.code}</span></div><h1>{courseName(course.name) || t('courseName')}</h1><p>{course.instructor || t('instructorName')} · {termName(course.term) || t('term')}</p></div>
+      <button className="button secondary" onClick={onEditCourse}><Pencil size={15}/>{t('editCourse')}</button></header>
+    <div className="tabs" role="tablist">{(['deadlines','syllabus'] as Tab[]).map((item) => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{t(item)}</button>)}</div>
+    {tab === 'deadlines' && <div className="tab-content deadlines-tab deadlines-layout">
+      <main className="deadlines-main">
+        <div className="section-heading deadlines-heading"><div><p className="eyebrow">{t('courseSchedule')}</p><h2>{t('deadlinesAndExams')}</h2></div><button className="button primary" onClick={onAddEvent}><Plus size={16}/>{t('addEvent')}</button></div>
+        <section className="event-group"><div className="group-heading"><h2>{t('upcoming')}</h2><span>{upcoming.length}</span><div className="range-selector" role="group" aria-label={t('upcoming')}>{([['14',t('twoWeeks')],['30',t('oneMonth')],['all',t('all')]] as Array<[UpcomingRange,string]>).map(([value,label]) => <button type="button" key={value} className={upcomingRange === value ? 'active' : ''} onClick={() => setUpcomingRange(value)}>{label}</button>)}</div></div>{upcoming.map((event) => <EventRow compact key={event.id} event={event} course={course} onOpen={() => onOpenEvent(event)} onStatus={(s) => onStatus(event,s)}/>)}{!upcoming.length && <p className="empty-inline">{t('noUpcomingRange')}</p>}</section>
+        <section className="event-group"><div className="group-heading"><h2>{t('overdue')}</h2><span>{overdue.length}</span></div>{overdue.map((event) => <EventRow compact statusClickTarget="done" key={event.id} event={event} course={course} onOpen={() => onOpenEvent(event)} onStatus={(s) => onStatus(event,s)}/>)}{!overdue.length && <p className="empty-inline">{t('nothingOverdue')}</p>}</section>
+        <section className="event-group"><div className="group-heading"><h2>{t('completed')}</h2><span>{completed.length}</span></div>{completed.map((event) => <EventRow compact key={event.id} event={event} course={course} onOpen={() => onOpenEvent(event)} onStatus={(s) => onStatus(event,s)}/>)}{!completed.length && <p className="empty-inline">{t('nothingCompleted')}</p>}</section>
+      </main>
+      <aside className="deadline-sidebar">
+        <section className="content-section deadline-notes"><div className="section-heading"><div><p className="eyebrow">{t('personal')}</p><h2>{t('notes')}</h2></div></div>
+          <textarea className="notes-area deadline-notes-area" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t('notesPlaceholder')}/>
+          <span className="save-state">{t('autosaves')}</span>
+        </section>
+        <section className="summary-card next-exam-card"><div className="next-exam-heading"><p className="eyebrow">{t('nextExam')}</p><button className="text-button" onClick={onAddExam}><Plus size={13}/>{t('addExam')}</button></div>{nextExam ? <button onClick={() => onOpenEvent(nextExam)}><strong>{nextExam.title}</strong><span>{eventDateTime(nextExam.dueAt, course.timezone, locale).toFormat('cccc, LLL d · h:mm a')}</span></button> : <p className="subtle">{t('noUpcomingExam')}</p>}</section>
+      </aside>
+    </div>}
+    {tab === 'syllabus' && <div className="tab-content syllabus-layout">
+      <section className="content-section"><div className="section-heading"><div><p className="eyebrow">{t('sourceDocument')}</p><h2>{t('syllabus')}</h2></div></div>
+        <div className="syllabus-field-grid">{syllabusFields.map((field) => <button className="syllabus-field-card" key={field.key} onClick={() => openSyllabusField(field.key)}>
+          <span className="syllabus-field-heading"><strong>{field.label}</strong><ChevronRight size={16}/></span>
+          <span className={`syllabus-field-preview ${syllabusDraft[field.key] ? '' : 'empty'}`}>{syllabusDraft[field.key] || field.placeholder}</span>
+          <small>{t('viewDetails')}</small>
+        </button>)}</div>
+        <div className="syllabus-source-actions">
+          <button className="compact-document compact-document-view syllabus-document-card" onClick={() => setSyllabusViewerOpen(true)}>{syllabusDraft.rawText || syllabusDraft.rawSummary ? <FileText size={20}/> : <Upload size={20}/>}<span><strong>{syllabusDraft.fileName || (syllabusDraft.sourceType === 'brightspace_api' ? t('brightspaceSyllabus') : t('attachPdf'))}</strong><small>{t('viewFullSyllabus')}</small></span><ChevronRight size={15}/></button>
+        </div>
+      </section>
+      <section className="content-section grade-section"><div className="section-heading"><div><p className="eyebrow">{t('structuredData')}</p><h2>{t('grades')}</h2></div></div>
+        <div className="grade-panel-tabs" role="tablist">
+          <button type="button" className={gradePanel === 'breakdown' ? 'active' : ''} onClick={() => setGradePanel('breakdown')}>{t('gradeBreakdown')}</button>
+          <button type="button" className={gradePanel === 'planner' ? 'active' : ''} onClick={() => setGradePanel('planner')}>{t('scorePlanner')}</button>
+        </div>
+        {gradePanel === 'breakdown' ? <>
+          <div className="grade-toolbar"><span>{t('displayAs')}</span><div className="grade-unit-toggle" role="group" aria-label={t('displayAs')}>
+            <button type="button" className={gradeMode === 'points' ? 'active' : ''} onClick={() => setGradeMode('points')}>Points</button>
+            <button type="button" className={gradeMode === 'percentage' ? 'active' : ''} onClick={() => setGradeMode('percentage')}>%</button>
+          </div></div>
+          <div className="grade-editor">{gradesDraft.map((item, index) => <div className="grade-edit-row" key={item.id}>
+            <input aria-label={t('category')} value={item.label} onChange={(event) => setGradeValue(index, { label:event.target.value })}/>
+            <div className="weight-input"><input type="number" min="0" max={gradeMode === 'percentage' ? 100 : undefined}
+              value={gradeMode === 'percentage' ? item.weight : item.points ?? ''}
+              onChange={(event) => setGradeValue(index, gradeMode === 'percentage' ? { weight:Number(event.target.value) } : { points:optionalNumber(event.target.value) })}/><span>{gradeMode === 'percentage' ? '%' : t('pointsShort')}</span></div>
+            <button className="icon-button" aria-label={t('remove')} onClick={() => setGradesDraft((all) => all.filter((_, itemIndex) => itemIndex !== index))}>×</button>
+          </div>)}</div>
+          <button className="text-button" onClick={addGradeItem}><Plus size={14}/>{t('addCategory')}</button>
+          <div className="grade-total"><span>{t('total')}</span><strong>{score(gradeMode === 'percentage' ? percentageTotal : pointsTotal)}{gradeMode === 'percentage' ? '%' : ` ${t('pointsShort')}`}</strong></div>
+          <div className="align-right"><button className="button primary" onClick={() => onSaveGrades(gradesDraft, gradeMode)}>{t('saveGradeBreakdown')}</button></div>
+        </> : <>
+          <p className="grade-planner-hint">{t('scorePlannerHint')}</p>
+          <div className="grade-plan-heading"><span>{t('category')}</span><span>{t('maxScore')}</span><span>{t('targetScore')}</span><span>{t('currentScore')}</span></div>
+          <div className="grade-plan-list">{gradesDraft.map((item, index) => <div className="grade-plan-row" key={item.id}>
+            <strong title={item.label}>{item.label}</strong>
+            <label><span>{t('maxScore')}</span><input type="number" min="0" value={item.points ?? ''} onChange={(event) => setGradeValue(index, { points:optionalNumber(event.target.value) })}/></label>
+            <label><span>{t('targetScore')}</span><input type="number" min="0" value={item.targetPoints ?? ''} onChange={(event) => setGradeValue(index, { targetPoints:optionalNumber(event.target.value) })}/></label>
+            <label className="grade-current-field"><span>{t('currentScore')}</span><div><input type="number" min="0" value={item.currentPoints ?? ''} onChange={(event) => setGradeValue(index, { currentPoints:optionalNumber(event.target.value) })}/><select value={item.currentMode ?? 'earned'} onChange={(event) => setGradeValue(index, { currentMode:event.target.value === 'lost' ? 'lost' : 'earned' })}><option value="earned">{t('earned')}</option><option value="lost">{t('lost')}</option></select></div></label>
+          </div>)}</div>
+          {!gradesDraft.length && <p className="empty-inline grade-plan-empty">{t('addGradeCategoriesFirst')}</p>}
+          <div className="grade-plan-summary">
+            <div><span>{t('maxTotal')}</span><strong>{score(pointsTotal)} {t('pointsShort')}</strong></div>
+            <div><span>{t('targetTotal')}</span><strong>{score(targetTotal)} {t('pointsShort')}</strong></div>
+            <div><span>{t('currentEstimate')}</span><strong>{currentValues.length ? `${score(currentTotal)} ${t('pointsShort')}` : '—'}</strong></div>
+            <div><span>{t('gapToTarget')}</span><strong>{currentValues.length ? `${score(Math.max(0, targetTotal - currentTotal))} ${t('pointsShort')}` : '—'}</strong></div>
+          </div>
+          <div className="align-right"><button className="button primary" onClick={() => onSaveGrades(gradesDraft, gradeMode)}>{t('saveScorePlan')}</button></div>
+        </>}
+        <div className="parser-note"><BookOpen size={18}/><p><strong>{t('parsingStatus')}</strong><br/>{syllabusDraft.sourceType === 'brightspace_api' ? t('parserBrightspace') : t('parserLocal')}</p></div>
+      </section>
+    </div>}
+    {activeSyllabusField && activeFieldDefinition && <Modal title={activeFieldDefinition.label} onClose={closeSyllabusField} wide className="syllabus-field-modal">
+      <div className="syllabus-field-modal-body">
+        {fieldEditing
+          ? <textarea autoFocus value={fieldDraft} onChange={(event) => setFieldDraft(event.target.value)} placeholder={activeFieldDefinition.placeholder}/>
+          : <div className={`syllabus-field-reading ${fieldDraft ? '' : 'empty'}`}>{fieldDraft || activeFieldDefinition.placeholder}</div>}
+      </div>
+      <footer className="syllabus-field-modal-actions">
+        {fieldEditing ? <span/> : <button className="button secondary" onClick={() => setFieldEditing(true)}><Pencil size={14}/>{t('edit')}</button>}
+        <div>{fieldEditing ? <><button className="button secondary" onClick={() => { setFieldDraft(syllabusDraft[activeSyllabusField]); setFieldEditing(false) }}>{t('cancel')}</button><button className="button primary" onClick={saveSyllabusField}>{t('saveChanges')}</button></> : <button className="button primary" onClick={closeSyllabusField}>{t('done')}</button>}</div>
+      </footer>
+    </Modal>}
+    {syllabusViewerOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSyllabusViewerOpen(false) }}>
+      <section className="modal wide syllabus-viewer" role="dialog" aria-modal="true" aria-label={t('fullSyllabus')}>
+        <header><div><p className="eyebrow">{t('sourceDocument')}</p><h2>{syllabusDraft.fileName || `${course.code} ${t('syllabus')}`}</h2></div><button className="icon-button" aria-label={t('closeSyllabus')} onClick={() => setSyllabusViewerOpen(false)}><X size={18}/></button></header>
+        <div className="syllabus-viewer-body"><SyllabusDocument content={syllabusDraft.rawText?.trim() || syllabusDraft.rawSummary?.trim() || ''} emptyText={t('noSyllabus')} overviewTitle={t('syllabusOverview')} contentsTitle={t('syllabusContents')}/></div>
+        <footer className="syllabus-viewer-actions"><button className="text-button" onClick={attach}>{t('clickReplace')}</button><div>{syllabusDraft.filePath && <button className="button secondary" onClick={() => window.dailyRoutine.openPath(syllabusDraft.filePath!)}><ExternalLink size={15}/>{t('openPdf')}</button>}<button className="button primary" onClick={() => setSyllabusViewerOpen(false)}>{t('done')}</button></div></footer>
+      </section>
+    </div>}
+  </div>
+}
+
+const blankSyllabus = (courseId: string): SyllabusInfo => ({ courseId, attendancePolicy:'', latePolicy:'', officeHours:'', rawSummary:'' })
+const optionalNumber = (value: string) => value === '' ? null : Number(value)

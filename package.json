@@ -1,0 +1,80 @@
+{
+  "name": "daily-routine",
+  "productName": "Daily Routine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first academic dashboard for courses, deadlines, syllabi, and imports.",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.electron.json && wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "dev:electron": "tsc -p tsconfig.electron.json && wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test": "vitest run",
+    "build": "vite build && tsc -p tsconfig.electron.json",
+    "pack:win": "electron-builder --win --dir",
+    "dist:win": "electron-builder --win nsis",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.2.6",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.468.0",
+    "luxon": "^3.5.0",
+    "pdf-parse": "2.4.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sql.js": "^1.12.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.4.2",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/sql.js": "^1.4.9",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.dailyroutine.desktop",
+    "productName": "Daily Routine",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "public/app-icon.png",
+        "to": "app-icon.png"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "node_modules/@tesseract.js-data/eng/4.0.0",
+        "to": "tessdata"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/tesseract.js/**/*",
+      "node_modules/tesseract.js-core/**/*"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": "nsis"
+    }
+  }
+}
