@@ -5,6 +5,7 @@ import {
   chooseSyllabusSource,
   contentCompletionStatus,
   quizCompletionStatus,
+  retrySimpleSyllabusCapture,
   simpleSyllabusCaptureReady,
   simpleSyllabusTextLooksComplete
 } from './brightspace'
@@ -79,6 +80,36 @@ All submitted programs must be the student's own work and follow the university 
 
     expect(simpleSyllabusTextLooksComplete(navigation)).toBe(false)
     expect(simpleSyllabusTextLooksComplete(complete)).toBe(true)
+  })
+
+  it('retries incomplete captures up to five times and stops after success', async () => {
+    const attempts: number[] = []
+    const failures: number[] = []
+    const result = await retrySimpleSyllabusCapture(async (attempt) => {
+      attempts.push(attempt)
+      return attempt === 5
+        ? { status:'success', value:'complete syllabus' }
+        : { status:'retryable', reason:'partial page' }
+    }, {
+      maxAttempts:10,
+      wait:async () => {},
+      onFailure:({ attempt }) => { failures.push(attempt) }
+    })
+
+    expect(result).toBe('complete syllabus')
+    expect(attempts).toEqual([1, 2, 3, 4, 5])
+    expect(failures).toEqual([1, 2, 3, 4])
+  })
+
+  it('does not retry when Simple Syllabus is explicitly unavailable', async () => {
+    const attempts: number[] = []
+    const result = await retrySimpleSyllabusCapture(async (attempt) => {
+      attempts.push(attempt)
+      return { status:'unavailable' }
+    }, { wait:async () => {} })
+
+    expect(result).toBeNull()
+    expect(attempts).toEqual([1])
   })
 })
 

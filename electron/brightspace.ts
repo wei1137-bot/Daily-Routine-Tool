@@ -9,6 +9,7 @@ export const BRIGHTSPACE_SESSION_PARTITION = 'persist:brightspace'
 const LP_VERSION = '1.62'
 const LE_VERSION = '1.96'
 const EXPIRED_MARKER = 'sessionExpired=1'
+const SIMPLE_SYLLABUS_MAX_ATTEMPTS = 5
 
 export interface BrightspaceCoursePayload {
   id: number
@@ -713,13 +714,34 @@ export class BrightspaceService {
     if (new URL(baseUrl).hostname.toLowerCase() !== 'purdue.brightspace.com') return null
     await this.acquireSimpleSyllabusCapture()
     try {
-      return await this.capturePurdueSimpleSyllabus(baseUrl, course, timezone)
+      return await retrySimpleSyllabusCapture(async (attempt) => {
+        this.writeLog('INFO', 'Purdue Simple Syllabus capture attempt started', {
+          courseId: course.id, course: course.name, attempt, maximumAttempts: SIMPLE_SYLLABUS_MAX_ATTEMPTS
+        })
+        return this.capturePurdueSimpleSyllabus(baseUrl, course, timezone, attempt)
+      }, {
+        maxAttempts:SIMPLE_SYLLABUS_MAX_ATTEMPTS,
+        onFailure:({ attempt, maximumAttempts, reason, retryDelayMs }) => {
+          const willRetry = attempt < maximumAttempts
+          this.writeLog('WARN', willRetry
+            ? 'Purdue Simple Syllabus capture incomplete; retry scheduled'
+            : 'Purdue Simple Syllabus capture retries exhausted', {
+            courseId: course.id, course: course.name, attempt, maximumAttempts, reason,
+            ...(willRetry ? { retryDelayMs } : {})
+          })
+        }
+      })
     } finally {
       this.releaseSimpleSyllabusCapture()
     }
   }
 
-  private async capturePurdueSimpleSyllabus(baseUrl: string, course: BrightspaceCoursePayload, timezone: string) {
+  private async capturePurdueSimpleSyllabus(
+    baseUrl: string,
+    course: BrightspaceCoursePayload,
+    timezone: string,
+    attempt: number
+  ): Promise<SimpleSyllabusCaptureAttempt<ParsedSyllabus>> {
     const launchUrl = buildPurdueSimpleSyllabusUrl(baseUrl, course.id)
     const win = new BrowserWindow({
       width: 1100,
@@ -732,6 +754,7 @@ export class BrightspaceService {
       await win.loadURL(launchUrl)
       const deadline = Date.now() + 30_000
       let bestPage: { title: string; text: string } | null = null
+      let sawDocumentFrame = false
       let firstReadableAt = 0
       let lastGrowthAt = 0
       while (Date.now() < deadline) {
@@ -744,6 +767,7 @@ export class BrightspaceService {
           }
         })
         if (frame) {
+          sawDocumentFrame = true
           const page = await frame.executeJavaScript(SIMPLE_SYLLABUS_CAPTURE_SCRIPT, true).catch(() => null) as SimpleSyllabusPageCapture | null
           if (page?.text && page.text.length > 500) {
             const observedAt = Date.now()
@@ -766,9 +790,9 @@ export class BrightspaceService {
       if (bestPage && simpleSyllabusTextLooksComplete(bestPage.text)) {
         this.writeLog('INFO', 'Purdue Simple Syllabus read successfully', {
           courseId: course.id, course: course.name, title: bestPage.title,
-          characters: bestPage.text.length, observedMs: Date.now() - firstReadableAt
+          characters: bestPage.text.length, observedMs: Date.now() - firstReadableAt, attempt
         })
-        return parseSyllabus({
+        return { status:'success', value:parseSyllabus({
           courseId: course.id,
           text: bestPage.text,
           filePath: null,
@@ -776,20 +800,23 @@ export class BrightspaceService {
           timezone,
           courseName: course.name,
           sourceKind: 'simple-syllabus-v2'
-        })
+        }) }
       }
       if (bestPage) {
-        this.writeLog('WARN', 'Incomplete Purdue Simple Syllabus capture discarded', {
-          courseId: course.id, course: course.name, characters: bestPage.text.length
-        })
+        return { status:'retryable', reason:`incomplete document body (${bestPage.text.length} characters)` }
       }
-      this.writeLog('INFO', 'No published Purdue Simple Syllabus found', { courseId: course.id, course: course.name })
-      return null
+      const shellText = await win.webContents.executeJavaScript('document.body?.innerText || ""', true).catch(() => '') as string
+      if (!sawDocumentFrame && simpleSyllabusExplicitlyUnavailable(shellText)) {
+        this.writeLog('INFO', 'No published Purdue Simple Syllabus found', {
+          courseId: course.id, course: course.name, attempt
+        })
+        return { status:'unavailable' }
+      }
+      return { status:'retryable', reason:sawDocumentFrame
+        ? 'document frame returned no readable body'
+        : 'document frame did not load' }
     } catch (error) {
-      this.writeLog('WARN', 'Purdue Simple Syllabus could not be opened', {
-        courseId: course.id, course: course.name, error: errorMessage(error)
-      })
-      return null
+      return { status:'retryable', reason:errorMessage(error) }
     } finally {
       if (!win.isDestroyed()) win.destroy()
     }
@@ -836,6 +863,50 @@ export function chooseSyllabusSource<T>(sources: { simpleSyllabus: T | null; ove
   if (sources.simpleSyllabus) return { source: 'simple-syllabus' as const, syllabus: sources.simpleSyllabus }
   if (sources.overviewSyllabus) return { source: 'overview' as const, syllabus: sources.overviewSyllabus }
   return null
+}
+
+export type SimpleSyllabusCaptureAttempt<T> =
+  | { status: 'success'; value: T }
+  | { status: 'unavailable' }
+  | { status: 'retryable'; reason: string }
+
+export async function retrySimpleSyllabusCapture<T>(
+  capture: (attempt: number) => Promise<SimpleSyllabusCaptureAttempt<T>>,
+  options: {
+    maxAttempts?: number
+    wait?: (milliseconds: number) => Promise<void>
+    onFailure?: (details: {
+      attempt: number
+      maximumAttempts: number
+      reason: string
+      retryDelayMs: number
+    }) => void
+  } = {}
+) {
+  const maximumAttempts = Math.max(1, Math.min(SIMPLE_SYLLABUS_MAX_ATTEMPTS, options.maxAttempts ?? SIMPLE_SYLLABUS_MAX_ATTEMPTS))
+  const wait = options.wait ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
+    let result: SimpleSyllabusCaptureAttempt<T>
+    try {
+      result = await capture(attempt)
+    } catch (error) {
+      result = { status:'retryable', reason:errorMessage(error) }
+    }
+    if (result.status === 'success') return result.value
+    if (result.status === 'unavailable') return null
+    const retryDelayMs = simpleSyllabusRetryDelay(attempt)
+    options.onFailure?.({ attempt, maximumAttempts, reason:result.reason, retryDelayMs })
+    if (attempt < maximumAttempts) await wait(retryDelayMs)
+  }
+  return null
+}
+
+function simpleSyllabusRetryDelay(attempt: number) {
+  return Math.min(4_000, 500 * 2 ** Math.max(0, attempt - 1))
+}
+
+function simpleSyllabusExplicitlyUnavailable(value: string) {
+  return /(?:no (?:published )?syllabus|syllabus (?:is )?not (?:published|available)|requested resource is not available)/i.test(value)
 }
 
 export function assignmentCompletionStatus(payload: unknown): BrightspaceCompletionStatus {
