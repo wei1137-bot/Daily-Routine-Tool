@@ -15,6 +15,7 @@ export interface ParsedSyllabus {
   filePath: string | null
   fileName: string | null
   rawText: string
+  courseTitle: string
   rawSummary: string
   instructor: string
   officeHours: string
@@ -49,6 +50,7 @@ export function parseSyllabus(input: {
   const sourceKind = input.sourceKind ?? 'unknown'
   const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 20)
   const sourceExternalId = `brightspace:syllabus:${input.courseId}:${sourceKind}:${fingerprint}`
+  const courseTitle = extractCourseTitle(text)
   const rawSummary = firstNonEmpty(
     sectionAny(text, ['Course Description', 'Course Overview', 'Catalog Description', 'About This Course'],
       ['Course Learning Outcomes', 'Learning Objectives', 'Prerequisites', 'Instructor Contact Information']),
@@ -76,6 +78,7 @@ export function parseSyllabus(input: {
     filePath: input.filePath ?? null,
     fileName: input.fileName ?? null,
     rawText: text,
+    courseTitle,
     rawSummary,
     instructor,
     officeHours,
@@ -84,6 +87,20 @@ export function parseSyllabus(input: {
     gradingItems,
     events
   }
+}
+
+function extractCourseTitle(text: string) {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 40)
+  for (const line of lines) {
+    const commaSeparated = line.match(/^[A-Z]{2,5}(?:\s*\([A-Z]{2,5}\))?\s+\d{3,5}\s*-\s*[A-Z0-9]{2,5}\s*,\s*\d+(?:\.\d+)?\s*,\s*(.+)$/i)
+    const sectionSeparated = line.match(/^[A-Z]{2,5}(?:\s*\([A-Z]{2,5}\))?\s+\d{3,5}(?:\s+[A-Z0-9]{2,5})?\s*[-–—]\s*(.+)$/i)
+    const title = (commaSeparated?.[1] ?? sectionSeparated?.[1])?.trim()
+    if (!title || /^(?:merge|section|lec(?:ture)?)\b/i.test(title)) continue
+    return title
+      .replace(/^Elem\.?\s+/i, 'Elementary ')
+      .replace(/\b(?:And|In|Of|The|To)\b/g, (word, offset: number) => offset === 0 ? word : word.toLowerCase())
+  }
+  return ''
 }
 
 function extractInstructor(text: string) {
@@ -209,9 +226,50 @@ function extractGradingItems(text: string, courseId: number): ParsedSyllabus['gr
   const found: Array<{ label: string; weight: number }> = []
   const add = (label: string, weight: number) => {
     const cleaned = cleanGradeLabel(label)
-    if (!cleaned || weight <= 0 || weight > 100 || found.some((item) => normalizeHeading(item.label) === normalizeHeading(cleaned))) return
+    const normalized = normalizeHeading(cleaned)
+    if (!cleaned || isGradeTotalLabel(normalized) || weight <= 0 || weight > 100
+      || found.some((item) => normalizeHeading(item.label) === normalized)) return
     found.push({ label: cleaned, weight })
   }
+  const addCategory = (label: string, weight: number, each = false) => {
+    if (each) {
+      const count = numberBeforeCategory(label) ?? (/midterms?/i.test(label) ? 2 : null)
+      if (count && count <= 6) {
+        const singular = /midterm/i.test(label) ? 'Midterm' : cleanGradeLabel(label).replace(/s$/i, '')
+        for (let index = 1; index <= count; index++) add(`${singular} ${index}`, weight)
+        return
+      }
+    }
+    add(toLabel(label), weight)
+  }
+  const lines = scope.split('\n').map((value) => value.trim()).filter(Boolean)
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
+    const followingPercentage = lines[index + 1]?.match(/^(\d{1,3}(?:\.\d+)?)\s*%(?:\s+(each))?$/i)
+    if (followingPercentage) {
+      addCategory(line, Number(followingPercentage[1]), Boolean(followingPercentage[2]))
+      index++
+      continue
+    }
+
+    const percentFirst = line.match(/^(\d{1,3}(?:\.\d+)?)\s*%\s*[-–—:]\s*(.+)$/i)
+    if (percentFirst) {
+      const label = percentFirst[2]
+        .replace(/^\d+\s+/, '')
+        .replace(/\s*\([^)]*(?:pts?|points?)[^)]*\).*$/i, '')
+        .replace(/:\s*\d+\s*(?:possible\s+)?points?.*$/i, '')
+      addCategory(label, Number(percentFirst[1]))
+      continue
+    }
+
+    const categoryFirst = line.match(/^([A-Za-z][A-Za-z0-9 &/(),+#'\-]{1,70}?)\s*(?::|\t|\bis\s+(?:collectively\s+)?worth\b|\s{2,})\s*%?(\d{1,3}(?:\.\d+)?)\s*%(?:\s+(each))?/i)
+      ?? line.match(/^([A-Za-z][A-Za-z0-9 &/(),+#'\-]{1,50}?)\s+%?(\d{1,3}(?:\.\d+)?)\s*%(?:\s+(each))?$/i)
+    if (!categoryFirst) continue
+    const label = categoryFirst[1]
+    const weight = Number(categoryFirst[2])
+    addCategory(label, weight, Boolean(categoryFirst[3]))
+  }
+
   const homework = scope.match(/homework\s+(?:is\s+)?(?:worth\s+)?%?(\d{1,3})\s*%/i)
   if (homework) add('Homework', Number(homework[1]))
   const midterms = scope.match(/midterms?[^\n.]{0,30}?%?(\d{1,3})\s*%?\s*\+\s*%?(\d{1,3})\s*%/i)
@@ -221,33 +279,6 @@ function extractGradingItems(text: string, courseId: number): ParsedSyllabus['gr
   }
   const finalExam = scope.match(/final(?:\s+exam)?\s+(?:is\s+)?(?:worth\s+)?(?:%(\d{1,3})|(\d{1,3})\s*%)/i)
   if (finalExam) add('Final exam', Number(finalExam[1] ?? finalExam[2]))
-
-  for (const line of scope.split('\n').map((value) => value.trim()).filter(Boolean)) {
-    const percentFirst = line.match(/^(\d{1,3}(?:\.\d+)?)\s*%\s*[-–—:]\s*(.+)$/i)
-    if (percentFirst) {
-      const label = percentFirst[2]
-        .replace(/^\d+\s+/, '')
-        .replace(/\s*\([^)]*(?:pts?|points?)[^)]*\).*$/i, '')
-        .replace(/:\s*\d+\s*(?:possible\s+)?points?.*$/i, '')
-      add(toLabel(label), Number(percentFirst[1]))
-      continue
-    }
-
-    const categoryFirst = line.match(/^([A-Za-z][A-Za-z0-9 &/(),+#'\-]{1,70}?)\s*(?::|\t|\bis\s+(?:collectively\s+)?worth\b|\s{2,})\s*%?(\d{1,3}(?:\.\d+)?)\s*%(?:\s+(each))?/i)
-      ?? line.match(/^([A-Za-z][A-Za-z0-9 &/(),+#'\-]{1,50}?)\s+%?(\d{1,3}(?:\.\d+)?)\s*%(?:\s+(each))?$/i)
-    if (!categoryFirst) continue
-    const label = categoryFirst[1]
-    const weight = Number(categoryFirst[2])
-    if (categoryFirst[3] && /\b(?:two|2|midterm exams?)\b/i.test(`${label} ${scope}`)) {
-      const count = numberBeforeCategory(label) ?? (/midterm/i.test(label) ? 2 : null)
-      if (count && count <= 6) {
-        const singular = /midterm/i.test(label) ? 'Midterm' : cleanGradeLabel(label).replace(/s$/i, '')
-        for (let index = 1; index <= count; index++) add(`${singular} ${index}`, weight)
-        continue
-      }
-    }
-    add(toLabel(label), weight)
-  }
 
   const resolvedPercentages = removeAggregateRows(found)
   if (resolvedPercentages.length) {
@@ -279,6 +310,10 @@ function extractGradingItems(text: string, courseId: number): ParsedSyllabus['gr
     weight:0,
     points:item.points
   }))
+}
+
+function isGradeTotalLabel(normalizedLabel: string) {
+  return /^(?:total|coursetotal|grandtotal|coursegrandtotal|overalltotal)$/.test(normalizedLabel)
 }
 
 function extractExamEvents(text: string, courseId: number, courseName: string, timezone: string) {

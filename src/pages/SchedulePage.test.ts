@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CourseMeeting } from '../domain/types'
-import { createMeetingDraft, groupMeetingsForEditor, mergeMeetings } from './SchedulePage'
+import { createMeetingDraft, groupMeetingsForEditor, mergeMeetings, resolveRecognizedInstructor } from './SchedulePage'
 
 const meeting = (id: string, dayOfWeek: number, startTime = '09:00'): CourseMeeting => ({
   id, courseId:'course', dayOfWeek, startTime, endTime:'09:50', location:'', instructor:'', label:'Lecture', sourceType:'manual'
@@ -29,5 +29,12 @@ describe('schedule draft merging', () => {
     expect(groups).toHaveLength(2)
     expect(groups[0].days).toEqual([1,3,5])
     expect(groups[0].meetings.map((item) => item.id)).toEqual(['monday','wednesday','friday'])
+  })
+
+  it('uses saved course metadata when OCR misses or badly misreads the instructor', () => {
+    expect(resolveRecognizedInstructor('', 'Alisa Sedunova')).toBe('Alisa Sedunova')
+    expect(resolveRecognizedInstructor('cs', 'Giulio Caviglia')).toBe('Giulio Caviglia')
+    expect(resolveRecognizedInstructor('K Ameranis', 'Konstantinos Ameranis')).toBe('K Ameranis')
+    expect(resolveRecognizedInstructor('', 'Instructor: Dr. Corrinne Lim-Kessler')).toBe('Dr. Corrinne Lim-Kessler')
   })
 })

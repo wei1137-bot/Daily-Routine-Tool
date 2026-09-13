@@ -1,4 +1,4 @@
-import { nativeImage } from 'electron'
+import { nativeImage, type NativeImage } from 'electron'
 import Tesseract from 'tesseract.js'
 
 export interface RecognizedScheduleMeeting {
@@ -55,33 +55,29 @@ export async function recognizeScheduleImage(
     const meetings: RecognizedScheduleMeeting[] = []
     for (const item of unique) {
       const bounds = dayBounds(item.dayOfWeek, dayCenters, width)
-      const top = Math.max(0, Math.round(timeScale.toY(item.startMinutes) - 5))
+      const top = Math.max(0, Math.round(Math.max(timeScale.toY(item.startMinutes) - 5, item.block.bbox.y1 + 2)))
       const bottom = Math.min(height, Math.round(timeScale.toY(item.endMinutes) + 5))
       const crop = image.crop({ x: bounds.left, y: top, width: bounds.right - bounds.left, height: Math.max(20, bottom - top) })
-        .resize({ width: Math.max(320, (bounds.right - bounds.left) * 2) })
+        .resize({ width: Math.max(480, (bounds.right - bounds.left) * 3) })
       let detail = item.block.text
       try {
-        const detailResult = await worker.recognize(crop.toPNG(), {}, { text: true })
+        const detailResult = await worker.recognize(highContrastPng(crop), {}, { text: true })
         if (detailResult.data.text.trim()) detail = detailResult.data.text.trim()
       } catch { /* The title-level recognition is still usable. */ }
-      const location = extractLocation(detail)
+      const details = extractScheduleDetails(detail)
       meetings.push({
         courseCode: item.courseCode,
         dayOfWeek: item.dayOfWeek,
         startTime: formatMinutes(item.startMinutes),
         endTime: formatMinutes(item.endMinutes),
-        location,
-        instructor: extractInstructor(detail, location),
+        location: details.location,
+        instructor: details.instructor,
         label: item.label,
         sourceImageName: imageName,
         confidence: Math.max(0, Math.min(1, item.block.confidence / 100))
       })
     }
-    for (const meeting of meetings) {
-      const peers = meetings.filter((candidate) => candidate.courseCode === meeting.courseCode && candidate.label === meeting.label)
-      if (!meeting.location) meeting.location = mostCommon(peers.map((candidate) => candidate.location).filter(Boolean))
-      if (!meeting.instructor) meeting.instructor = mostCommon(peers.map((candidate) => candidate.instructor).filter(Boolean))
-    }
+    normalizePeerDetails(meetings)
     return { meetings, rawText: result.data.text, confidence: Math.max(0, Math.min(1, result.data.confidence / 100)), imageName }
   } finally {
     await worker.terminate()
@@ -157,6 +153,23 @@ function dayBounds(day: number, centers: number[], width: number) {
   return { left, right }
 }
 
+export function extractScheduleDetails(value: string) {
+  const location = extractLocation(value)
+  return { location, instructor:extractInstructor(value, location) }
+}
+
+export function normalizePeerDetails(meetings: RecognizedScheduleMeeting[]) {
+  for (const meeting of meetings) {
+    const peers = meetings.filter((candidate) => candidate.courseCode === meeting.courseCode && candidate.label === meeting.label
+      && candidate.startTime === meeting.startTime && candidate.endTime === meeting.endTime)
+    const commonLocation = mostCommon(peers.map((candidate) => candidate.location).filter(Boolean))
+    const commonInstructor = mostCommon(peers.map((candidate) => candidate.instructor).filter(Boolean))
+    if (commonLocation) meeting.location = commonLocation
+    if (commonInstructor) meeting.instructor = commonInstructor
+  }
+  return meetings
+}
+
 function extractLocation(value: string) {
   const raw = value.toUpperCase().match(/\b([A-Z]{2,6})\s+([A-Z]?\d{2,4})\b/)?.[0] ?? ''
   return raw.replace(/^I?LWSN\b/, 'LWSN').replace(/^(?:HYS|PYS|YS)\b/, 'PHYS').replace(/^MP\b/, 'HAMP')
@@ -165,11 +178,28 @@ function extractLocation(value: string) {
 function extractInstructor(value: string, location: string) {
   if (!location) return ''
   const room = location.split(/\s+/).at(-1) ?? ''
-  const line = value.split(/\r?\n/).find((item) => item.toUpperCase().includes(location) || item.toUpperCase().includes(room)) ?? ''
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const lineIndex = lines.findIndex((item) => item.toUpperCase().includes(location) || item.toUpperCase().includes(room))
+  const line = lineIndex >= 0 ? lines[lineIndex] : ''
   const actualLocation = line.match(/\b[A-Z]{2,6}\s+[A-Z]?\d{2,4}\b/i)?.[0] ?? location
   const afterLocation = line.slice(line.toUpperCase().indexOf(actualLocation.toUpperCase()) + actualLocation.length).replace(/^[\s,;|]+/, '')
+    || lines[lineIndex + 1] || ''
   return afterLocation.replace(/\b\d{2}\/\d{2}\s*[-–]\s*\d{2}\/\d{2}\b.*$/i, '')
     .replace(/[^\p{L}\s.'-]/gu, '').replace(/^[\s.'-]+|[\s.'-]+$/g, '').replace(/^([A-Z])([A-Z][a-z])/,'$1 $2').trim()
+}
+
+function highContrastPng(image: NativeImage) {
+  const { width, height } = image.getSize()
+  const bitmap = Buffer.from(image.toBitmap())
+  for (let index = 0; index < bitmap.length; index += 4) {
+    const luminance = .0722 * bitmap[index] + .7152 * bitmap[index + 1] + .2126 * bitmap[index + 2]
+    const value = luminance < 90 ? 0 : 255
+    bitmap[index] = value
+    bitmap[index + 1] = value
+    bitmap[index + 2] = value
+    bitmap[index + 3] = 255
+  }
+  return nativeImage.createFromBitmap(bitmap, { width, height }).toPNG()
 }
 
 function mostCommon(values: string[]) {

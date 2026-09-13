@@ -37,7 +37,7 @@ export function SchedulePage({ courses, meetings, onSave }: {
       const next = result.meetings.map((item) => {
         const course = courses.find((candidate) => normalizeCode(candidate.code) === normalizeCode(item.courseCode))
         return { id:crypto.randomUUID(), courseId:course?.id ?? '', dayOfWeek:item.dayOfWeek, startTime:item.startTime,
-          endTime:item.endTime, location:item.location, instructor:item.instructor, label:item.label,
+          endTime:item.endTime, location:item.location, instructor:resolveRecognizedInstructor(item.instructor, course?.instructor), label:item.label,
           sourceType:'image_ocr', sourceImageName:item.sourceImageName } satisfies CourseMeeting
       })
       setDraft((current) => mergeMeetings(editing ? current : meetings, next)); setEditing(true)
@@ -88,10 +88,16 @@ export function SchedulePage({ courses, meetings, onSave }: {
   const closeImport = () => { setImportOpen(false); setDragging(false); dragDepthRef.current = 0; setMessage(undefined) }
   return <div className="page schedule-page">
     <header className="page-header"><div><p className="eyebrow">{t('weeklyPlan')}</p><h1>{t('schedule')}</h1><p className="subtitle">{t('scheduleSubtitle')}</p></div>
-      <div className="schedule-header-actions"><button className="button secondary" onClick={beginEditing}><Pencil size={16}/>{t('editSchedule')}</button><button className={`button ${meetings.length ? 'secondary' : 'primary'}`} onClick={() => { setMessage(undefined); setImportOpen(true) }}><ImagePlus size={16}/>{t('importScheduleImage')}</button></div>
+      <div className="schedule-header-actions"><button className="button secondary" onClick={beginEditing}><Pencil size={16}/>{t('editSchedule')}</button><button className={`button ${meetings.length ? 'secondary' : 'primary'}`} onClick={() => { setMessage(undefined); if (meetings.length) setImportOpen(true); else inputRef.current?.click() }}><ImagePlus size={16}/>{t('importScheduleImage')}</button></div>
     </header>
-    {!meetings.length ? <button className="schedule-dropzone" onClick={() => { setMessage(undefined); setImportOpen(true) }}>
-        <Upload size={28}/><strong>{t('dropSchedule')}</strong><span>{t('dropScheduleHint')}</span>
+    <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void recognize(event.target.files?.[0])}/>
+    {!meetings.length ? <button type="button" className={`schedule-dropzone ${dragging ? 'dragging' : ''}`} disabled={busy} aria-busy={busy}
+        onClick={() => { setMessage(undefined); inputRef.current?.click() }}
+        onDragEnter={(event) => { event.preventDefault(); dragDepthRef.current += 1; setDragging(true) }}
+        onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }}
+        onDragLeave={(event) => { event.preventDefault(); dragDepthRef.current = Math.max(0, dragDepthRef.current - 1); if (!dragDepthRef.current) setDragging(false) }}
+        onDrop={(event) => { event.preventDefault(); dragDepthRef.current = 0; setDragging(false); void recognize(event.dataTransfer.files[0]) }}>
+        {busy ? <Loader2 className="spin" size={28}/> : <Upload size={28}/>}<strong>{busy ? t('recognizingSchedule') : t('dropSchedule')}</strong><span>{t('dropScheduleHint')}</span>
       </button> : <Timetable courses={courses} meetings={meetings}/>}
     {message && !editing && !importOpen && <p className="schedule-message">{message}</p>}
     {importOpen && <Modal title={t('importScheduleImage')} onClose={() => { if (!busy) closeImport() }} className="schedule-import-modal">
@@ -103,7 +109,6 @@ export function SchedulePage({ courses, meetings, onSave }: {
           onDrop={(event) => { event.preventDefault(); dragDepthRef.current = 0; setDragging(false); void recognize(event.dataTransfer.files[0]) }}>
           {busy ? <Loader2 className="spin" size={34}/> : <Upload size={34}/>}<strong>{busy ? t('recognizingSchedule') : t('dropSchedule')}</strong><span>{t('dropScheduleHint')}</span>
           <button className="button primary" disabled={busy} onClick={() => inputRef.current?.click()}>{t('chooseScheduleImage')}</button>
-          <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void recognize(event.target.files?.[0])}/>
         </div>
         {message && <p className="schedule-message">{message}</p>}
       </div>
@@ -175,6 +180,11 @@ function Timetable({ courses, meetings }: { courses: Course[]; meetings: CourseM
 }
 
 function normalizeCode(value: string) { return value.replace(/[^a-z0-9]/gi,'').toLowerCase() }
+export function resolveRecognizedInstructor(recognized: string, saved?: string) {
+  const detected = recognized.trim()
+  const known = String(saved ?? '').replace(/^Instructor\s*:\s*/i, '').trim()
+  return !detected || /^[a-z]{1,3}$/i.test(detected) ? known : detected
+}
 export function createMeetingDraft(meetings: CourseMeeting[]) { return meetings.map((item) => ({ ...item })) }
 export function groupMeetingsForEditor(meetings: CourseMeeting[]) {
   const groups = new Map<string, CourseMeeting[]>()

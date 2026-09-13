@@ -29,7 +29,7 @@ const messages = {
     viewDetails:'Open details', noDetailsYet:'No details yet.', saveChanges:'Save changes', syllabusOverview:'Overview', syllabusContents:'Contents',
     title:'Title', course:'Course', type:'Type', dueDateTime:'Due date and time', status:'Status', source:'Source', viewOriginal:'View original extracted information',
     noOriginal:'No original source content is attached.', deleteEvent:'Delete event', cancel:'Cancel', saveEvent:'Save event', eventDetails:'Event details', reviewDetected:'Review detected event',
-    courseCode:'Course code', term:'Term', courseName:'Course name', instructor:'Instructor', instructorName:'Instructor name', courseTimezone:'Course timezone',
+    courseCode:'Course code', term:'Term', courseName:'Course name', instructor:'Instructor', instructorName:'Instructor name', courseTimezone:'Course timezone', reorderCourseHint:'Press and hold to reorder; use Alt + Up/Down with the keyboard',
     courseColor:'Course color', custom:'Custom', deleteCourse:'Delete course', saveCourse:'Save course',
     academicSchedule:'Academic schedule', calendarSubtitle:'Deadlines and exams across every course.', thisMonth:'Today', more:'more',
     nextWeekPlan:'Next Week Plan', nextWeekPlanHint:'Arrange tasks due in the next two weeks.', openPlanner:'Open planner',
@@ -83,7 +83,7 @@ const messages = {
     viewDetails:'打开查看', noDetailsYet:'暂无内容。', saveChanges:'保存修改', syllabusOverview:'课程概览', syllabusContents:'章节目录',
     title:'标题', course:'课程', type:'类型', dueDateTime:'截止日期与时间', status:'状态', source:'来源', viewOriginal:'查看原始提取信息',
     noOriginal:'没有关联的原始来源内容。', deleteEvent:'删除事项', cancel:'取消', saveEvent:'保存事项', eventDetails:'事项详情', reviewDetected:'检查识别结果',
-    courseCode:'课程代码', term:'学期', courseName:'课程名称', instructor:'教师', instructorName:'教师姓名', courseTimezone:'课程时区',
+    courseCode:'课程代码', term:'学期', courseName:'课程名称', instructor:'教师', instructorName:'教师姓名', courseTimezone:'课程时区', reorderCourseHint:'长按拖动排序；键盘可使用 Alt + 上/下方向键',
     courseColor:'课程颜色', custom:'自定义', deleteCourse:'删除课程', saveCourse:'保存课程',
     academicSchedule:'学业日程', calendarSubtitle:'查看所有课程的任务截止日期与考试日', thisMonth:'今天', more:'项',
     nextWeekPlan:'下一周计划', nextWeekPlanHint:'安排未来两周内的任务。', openPlanner:'打开日程安排',
@@ -129,17 +129,28 @@ export function tr(language: Language, key: MessageKey) {
 
 const courseNames: Record<string, string> = {
   'programming in c':'C 语言编程',
+  'geosciences in the cinema':'电影中的地球科学',
   'elem linear algebra':'初等线性代数',
+  'elementary linear algebra':'初等线性代数',
+  'intro discrete math':'离散数学导论',
   'introduction to discrete mathematics':'离散数学导论',
+  'intro behvr neurosci':'行为神经科学导论',
   'introduction to behavioral neuroscience':'行为神经科学导论',
+  'intro to statistics':'统计学导论',
   'introduction to statistics':'统计学导论',
   'fall 2026 eaps 106 dis - merge':'电影中的地球科学'
+}
+
+export function localizedCourseName(language: Language, value: string) {
+  if (language !== 'zh') return value
+  const normalizedName = value.trim().toLowerCase().replace(/\s+/g, ' ')
+  return courseNames[normalizedName] ?? value
 }
 
 export function useI18n() {
   const language = useContext(I18nContext)
   const t = (key: MessageKey) => tr(language, key)
-  const courseName = (value: string) => language === 'zh' ? (courseNames[value.trim().toLowerCase()] ?? value) : value
+  const courseName = (value: string) => localizedCourseName(language, value)
   const termName = (value: string) => language === 'zh' ? value.replace(/\b(Fall|Spring|Summer)\s+(20\d{2})\b/i, (_all, season: string, year: string) => `${year}年${({ fall:'秋季', spring:'春季', summer:'夏季' } as Record<string,string>)[season.toLowerCase()]}`) : value
   const eventType = (value: EventType) => t(value === 'office_hour' ? 'officeHour' : value as MessageKey)
   const status = (value: EventStatus) => t(value === 'not_done' ? 'notDone' : value === 'in_progress' ? 'inProgress' : 'statusDone')

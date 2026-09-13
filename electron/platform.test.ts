@@ -3,6 +3,7 @@ import { macApplicationMenuTemplate } from './app-menu'
 import {
   appZoomPercent,
   hidesMainWindowOnClose,
+  mainWindowDevToolsEnabled,
   platformDefaultWindowSize,
   resolveWindowSize,
   usesMacApplicationMenu
@@ -45,5 +46,11 @@ describe('desktop platform behavior', () => {
     expect(appZoomPercent('115')).toBe(115)
     expect(appZoomPercent('10')).toBe(80)
     expect(appZoomPercent('200')).toBe(130)
+  })
+
+  it('keeps the main-window developer tools disabled unless explicitly opted in', () => {
+    expect(mainWindowDevToolsEnabled()).toBe(false)
+    expect(mainWindowDevToolsEnabled('0')).toBe(false)
+    expect(mainWindowDevToolsEnabled('1')).toBe(true)
   })
 })

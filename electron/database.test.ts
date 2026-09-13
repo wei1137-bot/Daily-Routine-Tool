@@ -73,6 +73,50 @@ describe('syllabus source safety', () => {
     expect(database.getState().syllabi.find((item) => item.courseId === 'brightspace-course-1631417')?.rawText)
       .toBe(stableText)
   })
+
+  it('uses the formal syllabus title without overwriting a later custom course name', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-course-title-'))
+    temporaryDirectories.push(directory)
+    const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
+    const course = {
+      id:1638855, code:'MA 351', name:'Fall 2026 MA 35100 - Merge',
+      isActive:true, startDate:null, endDate:null
+    }
+    const syllabus = parseSyllabus({
+      courseId:course.id, courseName:course.name, timezone:'America/Indiana/Indianapolis',
+      sourceKind:'simple-syllabus-v2', text:`MA (WL) 35100 011 - Elem Linear Algebra
+      Course Description
+      Systems of linear equations and finite dimensional vector spaces.`
+    })
+    const payload = {
+      baseUrl:'https://purdue.brightspace.com', courses:[course], items:[], syllabi:[syllabus],
+      warnings:[], excludedCourseIds:[],
+      stats:{ enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:1 }
+    }
+
+    let state = database.importBrightspace(payload).state
+    expect(state.courses.find((item) => item.id === 'brightspace-course-1638855')?.name).toBe('Elementary Linear Algebra')
+
+    const imported = state.courses.find((item) => item.id === 'brightspace-course-1638855')!
+    database.saveCourse({ ...imported, name:'My Linear Algebra Course' })
+    state = database.importBrightspace(payload).state
+    expect(state.courses.find((item) => item.id === imported.id)?.name).toBe('My Linear Algebra Course')
+
+    const eapsCourse = {
+      id:1632000, code:'EAPS 106', name:'Fall 2026 EAPS 10600 - Merge',
+      isActive:true, startDate:null, endDate:null
+    }
+    const eapsSyllabus = parseSyllabus({
+      courseId:eapsCourse.id, courseName:eapsCourse.name, timezone:'America/Indiana/Indianapolis',
+      sourceKind:'overview-attachment', text:'1\nEAPS 106-002, 3, Geosciences in the Cinema\nFall 2026'
+    })
+    const eapsPayload = { ...payload, courses:[eapsCourse], syllabi:[eapsSyllabus] }
+    state = database.importBrightspace({ ...eapsPayload, syllabi:[] }).state
+    const eapsImported = state.courses.find((item) => item.id === 'brightspace-course-1632000')!
+    database.saveCourse({ ...eapsImported, name:'002, 3, Geosciences in the Cinema' })
+    state = database.importBrightspace(eapsPayload).state
+    expect(state.courses.find((item) => item.id === eapsImported.id)?.name).toBe('Geosciences in the Cinema')
+  })
 })
 
 describe('initial Brightspace completion status', () => {

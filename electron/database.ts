@@ -237,7 +237,7 @@ export class DatabaseService {
   }
 
   private reparseStoredSyllabi() {
-    const parserVersion = '7'
+    const parserVersion = '9'
     const installedVersion = String(this.rows("SELECT value FROM settings WHERE key = 'syllabusParserVersion'")[0]?.value ?? '')
     if (installedVersion === parserVersion) return
     const stored = this.rows(`SELECT s.*, c.name, c.timezone
@@ -260,6 +260,9 @@ export class DatabaseService {
           this.db.run("UPDATE courses SET instructor = ?, updated_at = ? WHERE id = ? AND TRIM(COALESCE(instructor, '')) = ''",
             [parsed.instructor, stamp, row.course_id])
         }
+        if (parsed.courseTitle && shouldReplaceImportedCourseName(String(row.name ?? ''))) {
+          this.db.run('UPDATE courses SET name = ?, updated_at = ? WHERE id = ?', [parsed.courseTitle, stamp, row.course_id])
+        }
         if (!Boolean(row.user_edited)) {
           this.db.run(`UPDATE syllabus_info SET attendance_policy = ?, late_policy = ?,
             office_hours = ?, raw_summary = ?, updated_at = ? WHERE course_id = ?`, [
@@ -271,8 +274,10 @@ export class DatabaseService {
           ])
         }
         const existingGrades = this.rows('SELECT id, user_edited FROM grading_items WHERE course_id = ?', [row.course_id])
-        this.applyParsedGradingItems(String(row.course_id), parsed.gradingItems,
-          existingGrades.length === 0 || existingGrades.every((item) => !Boolean(item.user_edited)))
+        if (plausibleParsedGrades(parsed.gradingItems)) {
+          this.applyParsedGradingItems(String(row.course_id), parsed.gradingItems,
+            existingGrades.length === 0 || existingGrades.every((item) => !Boolean(item.user_edited)))
+        }
         for (const event of parsed.events) {
           this.upsertImportedEvent({
             id: event.id, courseId: String(row.course_id), title: event.title, type: event.type,
@@ -597,6 +602,14 @@ export class DatabaseService {
         const localCourseId = courseIds.get(syllabus.courseId)
         if (!localCourseId) continue
         const existing = this.rows('SELECT * FROM syllabus_info WHERE course_id = ?', [localCourseId])[0]
+        const remoteCourse = academicCourses.find((course) => course.id === syllabus.courseId)
+        const storedCourse = this.rows('SELECT name FROM courses WHERE id = ?', [localCourseId])[0]
+        if (syllabus.courseTitle && remoteCourse
+          && (!String(storedCourse?.name ?? '').trim()
+            || normalizedCourseName(String(storedCourse?.name ?? '')) === normalizedCourseName(remoteCourse.name)
+            || shouldReplaceImportedCourseName(String(storedCourse?.name ?? '')))) {
+          this.db.run('UPDATE courses SET name = ?, updated_at = ? WHERE id = ?', [syllabus.courseTitle, stamp, localCourseId])
+        }
         if (syllabus.instructor) {
           this.db.run("UPDATE courses SET instructor = ?, updated_at = ? WHERE id = ? AND TRIM(COALESCE(instructor, '')) = ''",
             [syllabus.instructor, stamp, localCourseId])
@@ -631,13 +644,11 @@ export class DatabaseService {
         syllabiImported++
 
         const existingGrades = this.rows('SELECT id, label, weight, points, user_edited FROM grading_items WHERE course_id = ?', [localCourseId])
-        const incomingGradeTotal = syllabus.gradingItems.reduce((sum, item) => sum + Number(item.weight), 0)
-        const incomingPointsTotal = syllabus.gradingItems.reduce((sum, item) => sum + Number(item.points), 0)
-        const plausibleGrades = syllabus.gradingItems.length > 0
-          && ((incomingGradeTotal >= 90 && incomingGradeTotal <= 110) || incomingPointsTotal > 0)
         const autoGrades = existingGrades.length === 0 || existingGrades.every((item) => !Boolean(item.user_edited))
         const gradeResultIsNotADowngrade = existingGrades.length === 0 || incomingIsRicher || syllabus.gradingItems.length >= existingGrades.length
-        if (plausibleGrades) this.applyParsedGradingItems(localCourseId, syllabus.gradingItems, autoGrades && gradeResultIsNotADowngrade)
+        if (plausibleParsedGrades(syllabus.gradingItems)) {
+          this.applyParsedGradingItems(localCourseId, syllabus.gradingItems, autoGrades && gradeResultIsNotADowngrade)
+        }
         for (const event of syllabus.events) {
           const outcome = this.upsertImportedEvent({
             id: event.id, courseId: localCourseId, title: event.title, type: event.type,
@@ -878,6 +889,18 @@ function mapCourse(r: Row) {
 
 function normalizeGradeLabel(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+function plausibleParsedGrades(items: ParsedGradingItem[]) {
+  const weightTotal = items.reduce((sum, item) => sum + Number(item.weight), 0)
+  const pointsTotal = items.reduce((sum, item) => sum + Number(item.points), 0)
+  return items.length > 0 && ((weightTotal >= 90 && weightTotal <= 110) || pointsTotal > 0)
+}
+
+function shouldReplaceImportedCourseName(value: string) {
+  const name = value.trim()
+  return /^(?:Spring|Summer|Fall|Winter)\s+20\d{2}\b.*(?:\bMerge\b|\bSection\b|\bLEC\b)/i.test(name)
+    || /^\d{2,5}\s*,\s*\d+(?:\.\d+)?\s*,\s*\S/.test(name)
 }
 
 function openHealthyDatabase(SQL: Awaited<ReturnType<typeof initSqlJs>>, filePath: string): SqlDatabase | null {

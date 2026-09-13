@@ -12,6 +12,7 @@ import { CalendarPage } from './pages/CalendarPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { mergeDuplicateEvents } from './domain/event/eventUtils'
+import { applyCourseOrder } from './domain/courseOrder'
 import { I18nProvider, tr, type Language } from './i18n'
 import { importBrightspaceForOnboarding, importGradescopeForOnboarding } from './services/onboarding'
 
@@ -30,6 +31,7 @@ export function App() {
   const accentColor = /^#[0-9a-f]{6}$/i.test(state.settings.appAccentColor ?? '') ? state.settings.appAccentColor : '#536faf'
   const defaultTimezone = state.settings.defaultTimezone ?? 'America/Indiana/Indianapolis'
   const defaultTerm = currentAcademicTerm(defaultTimezone)
+  const orderedCourses = useMemo(() => applyCourseOrder(state.courses, state.settings.courseOrder), [state.courses, state.settings.courseOrder])
 
   useEffect(() => {
     document.documentElement.style.setProperty('--primary', accentColor)
@@ -91,6 +93,11 @@ export function App() {
     catch (e) { setError(e instanceof Error ? e.message : String(e)); throw e }
   }, [])
   const saveCourse = useCallback((course: Course) => { void perform(() => window.dailyRoutine.saveCourse(course)) }, [perform])
+  const reorderCourses = useCallback((courseIds: string[]) => {
+    const value = JSON.stringify(courseIds)
+    setState((current) => ({ ...current, settings:{ ...current.settings, courseOrder:value } }))
+    void perform(() => window.dailyRoutine.saveSetting({ key:'courseOrder', value })).catch(() => undefined)
+  }, [perform])
   const connectBrightspaceForOnboarding = async () => {
     const baseUrl = state.settings.brightspaceBaseUrl ?? 'https://purdue.brightspace.com'
     setState(await importBrightspaceForOnboarding(window.dailyRoutine, baseUrl))
@@ -118,7 +125,7 @@ export function App() {
   </I18nProvider>
 
   return <I18nProvider language={language}><div className="app-shell">
-    <Sidebar page={page} courses={state.courses} activeCourseId={activeCourse?.id} onNavigate={navigate} onAddCourse={() => setCourseModal('new')}/>
+    <Sidebar page={page} courses={orderedCourses} activeCourseId={activeCourse?.id} onNavigate={navigate} onAddCourse={() => setCourseModal('new')} onReorderCourses={reorderCourses}/>
     <div className="main-shell" ref={mainShellRef}>
       {error && <div className="error-banner"><AlertTriangle size={16}/><span>{error}</span><button onClick={() => setError(undefined)}>{tr(language,'dismiss')}</button></div>}
       {page === 'dashboard' && <Dashboard courses={state.courses} events={displayEvents} meetings={state.meetings} timezone={state.settings.defaultTimezone ?? 'America/Indiana/Indianapolis'} hideCompleted={state.settings.hideCompleted === 'true'}

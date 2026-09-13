@@ -13,7 +13,7 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
   courses: Course[]; events: AcademicEvent[]; meetings: CourseMeeting[]; timezone: string; hideCompleted: boolean; onToggleCompleted: (value: boolean) => void
   onOpenEvent: (event: AcademicEvent) => void; onStatus: (event: AcademicEvent, status: EventStatus) => void; onAdd: () => void; onAddExam: () => void
 }) {
-  const { language, locale, t, eventGroup } = useI18n()
+  const { language, locale, t, courseName, eventGroup } = useI18n()
   const [laterRange, setLaterRange] = useState<LaterRange>('14')
   const [laterExpanded, setLaterExpanded] = useState(false)
   const [pastExpanded, setPastExpanded] = useState(false)
@@ -67,7 +67,7 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
               const label = meeting.label === 'Lecture' ? t('lecture') : meeting.label === 'Lab' ? t('lab') : meeting.label
               return <article className="today-class-card" key={meeting.id}>
                 <span className={`today-class-accent ${courseColorClass(course?.colorKey)}`} style={courseColorStyle(course?.colorKey)}/>
-                <span className="today-class-copy"><strong>{course?.code ?? t('unknownCourse')}</strong><small>{label || course?.name}</small></span>
+                <span className="today-class-copy"><strong>{course?.code ?? t('unknownCourse')}</strong><small>{label || courseName(course?.name ?? '')}</small></span>
                 <span className="today-class-meta"><span><Clock3 size={12}/>{formatMeetingTime(meeting.startTime,locale)}–{formatMeetingTime(meeting.endTime,locale)}</span>{meeting.location && <span><MapPin size={12}/>{meeting.location}</span>}</span>
               </article>
             })}

@@ -37,6 +37,10 @@ export function appZoomPercent(value?: string | number) {
   return Math.min(130, Math.max(80, Math.round(parsed)))
 }
 
+export function mainWindowDevToolsEnabled(optIn = process.env.DAILY_ROUTINE_ENABLE_DEVTOOLS) {
+  return optIn === '1'
+}
+
 function validDimension(value?: string) {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null

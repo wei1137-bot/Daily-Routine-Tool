@@ -9,7 +9,7 @@ import { CredentialStore } from './credential-store'
 import { canonicalAppDataRoot, prepareStableUserData } from './user-data'
 import { trayLabels } from './tray-menu'
 import { macApplicationMenuTemplate } from './app-menu'
-import { appZoomPercent, hidesMainWindowOnClose, MINIMUM_WINDOW_SIZE, resolveWindowSize, usesMacApplicationMenu } from './platform'
+import { appZoomPercent, hidesMainWindowOnClose, mainWindowDevToolsEnabled, MINIMUM_WINDOW_SIZE, resolveWindowSize, usesMacApplicationMenu } from './platform'
 import { assertTesseractLanguageData, runtimeAssetPath, tesseractLanguagePath } from './runtime-resources'
 
 let database: DatabaseService
@@ -76,6 +76,7 @@ async function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) { showWindow(); return }
   const settings = database.getState().settings
   const windowSize = resolveWindowSize(settings, process.platform, screen.getPrimaryDisplay().workAreaSize)
+  const allowMainWindowDevTools = mainWindowDevToolsEnabled()
   mainWindow = new BrowserWindow({
     ...windowSize,
     center: process.platform === 'darwin',
@@ -89,12 +90,16 @@ async function createWindow() {
       nodeIntegration: false,
       sandbox: false,
       zoomFactor: appZoomPercent(settings.appZoomPercent) / 100,
-      // Keep Chromium's docked developer-tools pane out of production. If it is
-      // opened accidentally it reduces the renderer viewport and can look like
-      // a large blank block covering the lower half of the app.
-      devTools: !app.isPackaged
+      // A docked DevTools pane shrinks the renderer and appears as a large blank
+      // block when its frontend fails to load. Keep it opt-in in every build.
+      devTools: allowMainWindowDevTools
     }
   })
+  if (!allowMainWindowDevTools) {
+    mainWindow.webContents.on('devtools-opened', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.closeDevTools()
+    })
+  }
   if (!usesMacApplicationMenu()) mainWindow.setMenuBarVisibility(false)
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.on('close', (event) => {
