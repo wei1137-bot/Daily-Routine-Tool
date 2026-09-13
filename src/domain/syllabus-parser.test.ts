@@ -273,4 +273,45 @@ There are no class meetings and no attendance is taken. Both midterms are held i
     expect(descriptionSource.text).not.toContain('Office: MATH 210')
     expect(parsed.attendancePolicy).toBe('No regular attendance is taken; both in-person midterms require attendance.')
   })
+
+  it('ignores a repeated table of contents and reads the later syllabus sections', () => {
+    const parsed = parseSyllabus({
+      courseId:240, courseName:'CS 240', timezone:'America/Indiana/Indianapolis',
+      sourceKind:'simple-syllabus-v2',
+      text:`Course Information
+Instructor(s) Contact Information
+Course Description
+Course Learning Outcomes
+Attendance Policy
+Course Schedule
+Late Work
+Absences
+Academic Integrity
+Course Information
+Meeting Information: BHEE 129
+Instructor(s) Contact Information
+Name: Ada Lovelace
+Student Consultation Hours
+Appointment by eMail
+Course Description
+Credit Hours: 3. The UNIX environment, C development cycle, pointers, and dynamic memory allocation.
+Course Learning Outcomes
+Write maintainable C programs.
+Attendance Policy
+It is in your best interest to attend all lectures and labs.
+Course Schedule
+Weekly topics are posted in Brightspace.
+Late Work
+We allow late submissions with a penalty of 10% per day late with a 48 hour maximum. There is an initial grace period of six hours where a reduced 2% penalty applies.
+Absences
+Official documentation is required.
+Academic Integrity
+Submit your own work.`
+    })
+
+    expect(parsed.rawSummary).toContain('UNIX environment')
+    expect(parsed.attendancePolicy).toContain('best interest to attend')
+    expect(parsed.latePolicy).toContain('10% per day late')
+    expect(parsed.latePolicy).not.toBe('Absences')
+  })
 })

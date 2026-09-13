@@ -238,13 +238,13 @@ export class DatabaseService {
   }
 
   private async reparseStoredSyllabi() {
-    const parserVersion = '12'
+    const parserVersion = '13'
     const installedVersion = String(this.rows("SELECT value FROM settings WHERE key = 'syllabusParserVersion'")[0]?.value ?? '')
     if (installedVersion === parserVersion) return
     const stored = this.rows(`SELECT s.*, c.name, c.timezone
       FROM syllabus_info s JOIN courses c ON c.id = s.course_id
       WHERE s.source_type = 'brightspace_api' AND LENGTH(COALESCE(s.raw_text, '')) > 0`)
-    if (stored.length) this.createSafetySnapshot('before-syllabus-source-refresh-v12')
+    if (stored.length) this.createSafetySnapshot('before-syllabus-source-refresh-v13')
     const stamp = now()
     this.db.run('BEGIN TRANSACTION')
     try {
@@ -1031,7 +1031,8 @@ function mergeStoredFieldResults(row: Row, incoming: Record<SyllabusFieldKey, Sy
       && comparableText(String(row.raw_text ?? '')).includes(comparableText(savedDisplay))
     const manualDisplay = previous?.type === 'manual'
       || (manuallyEdited && !previous && !savedWasVerbatimExtract && savedDisplay.trim() !== parsed.display.trim())
-    const display = manualDisplay || !parsed.display ? savedDisplay : parsed.display
+    const staleAutomaticDisplay = !manualDisplay && isInvalidAutomaticSyllabusDisplay(key, savedDisplay)
+    const display = manualDisplay ? savedDisplay : parsed.display || (staleAutomaticDisplay ? '' : savedDisplay)
     const sources = mergeCorrectedSources(previous?.sources ?? [], parsed.sources)
     return [key, {
       display,
@@ -1039,6 +1040,17 @@ function mergeStoredFieldResults(row: Row, incoming: Record<SyllabusFieldKey, Sy
       sources
     }]
   })) as Record<SyllabusFieldKey, SyllabusFieldResult>
+}
+
+function isInvalidAutomaticSyllabusDisplay(key: SyllabusFieldKey, value: string) {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const invalidByField: Record<SyllabusFieldKey, string[]> = {
+    rawSummary:['coursedescription', 'courseoverview'],
+    officeHours:['officehours', 'studentconsultationhours'],
+    attendancePolicy:['attendancepolicy', 'classattendance', 'absences'],
+    latePolicy:['latepolicy', 'latework', 'absences']
+  }
+  return invalidByField[key].includes(normalized)
 }
 
 function mergeCorrectedSources(existing: SyllabusFieldResult['sources'], incoming: SyllabusFieldResult['sources']) {

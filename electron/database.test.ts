@@ -135,6 +135,50 @@ Course Schedule`
     expect(result.fieldResults.latePolicy.sources[0].correctedText).toBe(correctedLateSource.correctedText)
   })
 
+  it('removes a stale navigation heading during a parser-version refresh', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-syllabus-stale-heading-'))
+    temporaryDirectories.push(directory)
+    const filePath = path.join(directory, 'test.sqlite')
+    const database = await DatabaseService.create(filePath)
+    const course = {
+      id:240, code:'CS 240', name:'Fall 2026 CS 24000 - Merge',
+      isActive:true, startDate:null, endDate:null
+    }
+    const text = `Course Information
+Course Description
+Course Learning Outcomes
+Late Work
+Absences
+Academic Integrity
+Course Information
+Meeting information appears here.
+Course Description
+Systems programming fundamentals and memory management.
+Course Learning Outcomes
+Students will write maintainable programs.
+Late Work
+Absences
+Academic Integrity
+Students must follow the university academic integrity requirements.`
+    const syllabus = parseSyllabus({
+      courseId:course.id, courseName:course.name, timezone:'America/New_York',
+      sourceKind:'simple-syllabus-v2', text
+    })
+    const payload = {
+      baseUrl:'https://example.test', courses:[course], items:[], syllabi:[{
+        ...syllabus,
+        latePolicy:'Absences',
+        fieldResults:{ ...syllabus.fieldResults, latePolicy:{ display:'Absences', type:'unknown', sources:[] } }
+      }], warnings:[], excludedCourseIds:[],
+      stats:{ enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:1 }
+    }
+    database.importBrightspace(payload)
+    database.saveSetting({ key:'syllabusParserVersion', value:'12' })
+
+    const upgraded = await DatabaseService.create(filePath)
+    expect(upgraded.getState().syllabi[0].latePolicy).toBe('')
+  })
+
   it('treats a current Simple Syllabus as more authoritative than legacy overview text', () => {
     expect(syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus:new')).toBeGreaterThan(
       syllabusSourcePriority('brightspace:syllabus:1644209:legacy-hash')

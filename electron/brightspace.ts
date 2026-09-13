@@ -758,12 +758,12 @@ export class BrightspaceService {
               observedAt,
               completedPasses: page.completedPasses,
               loading: page.loading
-            })) break
+            }) && simpleSyllabusTextLooksComplete(bestPage.text)) break
           }
         }
         await new Promise((resolve) => setTimeout(resolve, 500))
       }
-      if (bestPage) {
+      if (bestPage && simpleSyllabusTextLooksComplete(bestPage.text)) {
         this.writeLog('INFO', 'Purdue Simple Syllabus read successfully', {
           courseId: course.id, course: course.name, title: bestPage.title,
           characters: bestPage.text.length, observedMs: Date.now() - firstReadableAt
@@ -776,6 +776,11 @@ export class BrightspaceService {
           timezone,
           courseName: course.name,
           sourceKind: 'simple-syllabus-v2'
+        })
+      }
+      if (bestPage) {
+        this.writeLog('WARN', 'Incomplete Purdue Simple Syllabus capture discarded', {
+          courseId: course.id, course: course.name, characters: bestPage.text.length
         })
       }
       this.writeLog('INFO', 'No published Purdue Simple Syllabus found', { courseId: course.id, course: course.name })
@@ -875,6 +880,45 @@ export function simpleSyllabusCaptureReady(input: {
     && input.observedAt - input.lastGrowthAt >= 2_000
 }
 
+const SIMPLE_SYLLABUS_SECTION_NAMES = [
+  'Course Information', 'Instructor(s) Contact Information', 'Instructor Contact Information',
+  'Course Description', 'Course Learning Outcomes', 'Teaching Philosophy', 'How to Succeed in this Course',
+  'Learning Resources, Technology & Texts', 'Assignments', 'Grading Scale', 'Grades and Grade Reports',
+  'Attendance Policy', 'Course Schedule', 'Netiquette', 'Regrade Requests', 'Late Work', 'Absences',
+  'Academic Integrity', 'AI Policy', 'Nondiscrimination Statement', 'Accessibility', 'Accommodations',
+  'Mental Health/Wellness Statement', 'Emergency Preparedness', 'Student-Related Policies',
+  'University Policies', 'Grade Appeals Process', 'Basic Needs Program', 'Course Evaluation'
+]
+
+export function simpleSyllabusTextLooksComplete(text: string) {
+  const lines = text.replace(/\r/g, '').split('\n').map((line) => line.trim()).filter(Boolean)
+  const sectionByHeading = new Map(SIMPLE_SYLLABUS_SECTION_NAMES.map((name) => [simpleHeadingKey(name), name]))
+  const terminalSections = new Set([
+    'Academic Integrity', 'Nondiscrimination Statement', 'Accessibility', 'Accommodations',
+    'Mental Health/Wellness Statement', 'Emergency Preparedness', 'Student-Related Policies',
+    'University Policies', 'Grade Appeals Process', 'Basic Needs Program', 'Course Evaluation'
+  ])
+  const meaningful = new Set<string>()
+  for (let index = 0; index < lines.length; index++) {
+    const section = sectionByHeading.get(simpleHeadingKey(lines[index]))
+    if (!section) continue
+    let hasProse = false
+    for (let cursor = index + 1; cursor < lines.length; cursor++) {
+      if (sectionByHeading.has(simpleHeadingKey(lines[cursor]))) break
+      if ((lines[cursor].match(/[A-Za-z0-9]+/g)?.length ?? 0) >= 8) {
+        hasProse = true
+        break
+      }
+    }
+    if (hasProse) meaningful.add(section)
+  }
+  return meaningful.size >= 3 && [...meaningful].some((section) => terminalSections.has(section))
+}
+
+function simpleHeadingKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
 // Simple Syllabus lazily fills long pages while they are scrolled. Jumping straight
 // to the bottom can leave most of the document unloaded, and innerText also inserts
 // line wraps based on platform font metrics. This browser-side scanner advances one
@@ -885,7 +929,7 @@ const SIMPLE_SYLLABUS_CAPTURE_SCRIPT = String.raw`(() => {
     'FORM','H1','H2','H3','H4','H5','H6','HEADER','HR','LI','MAIN','NAV','OL','P','PRE','SECTION','TABLE',
     'TBODY','TD','TFOOT','TH','THEAD','TR','UL'
   ])
-  const ignoredTags = new Set(['SCRIPT','STYLE','NOSCRIPT','SVG','PATH'])
+  const ignoredTags = new Set(['SCRIPT','STYLE','NOSCRIPT','SVG','PATH','NAV'])
   const separatedInlineTags = new Set(['A','BUTTON','LABEL','SPAN'])
   const output = []
   const newline = () => {
@@ -902,6 +946,9 @@ const SIMPLE_SYLLABUS_CAPTURE_SCRIPT = String.raw`(() => {
       return
     }
     if (node.nodeType !== 1 || ignoredTags.has(node.tagName)) return
+    if (node.hidden || node.getAttribute('aria-hidden') === 'true') return
+    const style = getComputedStyle(node)
+    if (style.display === 'none' || style.visibility === 'hidden') return
     if (node.tagName === 'BR') { newline(); return }
     const isBlock = blockTags.has(node.tagName)
     const isSeparatedInline = separatedInlineTags.has(node.tagName)
@@ -911,7 +958,9 @@ const SIMPLE_SYLLABUS_CAPTURE_SCRIPT = String.raw`(() => {
     if (isBlock) newline()
     else if (isSeparatedInline) space()
   }
-  if (document.body) walk(document.body)
+  const contentRoot = document.querySelector('main article, main [role="document"], [role="main"] article, [role="document"], main, article')
+    || document.body
+  if (contentRoot) walk(contentRoot)
   const text = output.join('')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
@@ -919,7 +968,9 @@ const SIMPLE_SYLLABUS_CAPTURE_SCRIPT = String.raw`(() => {
     .trim()
 
   const stateKey = '__dailyRoutineSyllabusScanV2'
-  const candidates = [document.scrollingElement, ...document.querySelectorAll('*')]
+  const relatedElements = contentRoot ? [contentRoot, ...contentRoot.querySelectorAll('*')] : []
+  for (let ancestor = contentRoot?.parentElement; ancestor; ancestor = ancestor.parentElement) relatedElements.push(ancestor)
+  const candidates = [...new Set([document.scrollingElement, ...relatedElements])]
     .filter((element) => {
       if (!element || element.scrollHeight <= element.clientHeight + 100) return false
       if (element === document.scrollingElement) return true

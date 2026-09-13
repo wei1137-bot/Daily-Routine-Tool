@@ -5,7 +5,8 @@ import {
   chooseSyllabusSource,
   contentCompletionStatus,
   quizCompletionStatus,
-  simpleSyllabusCaptureReady
+  simpleSyllabusCaptureReady,
+  simpleSyllabusTextLooksComplete
 } from './brightspace'
 
 describe('Brightspace syllabus source selection', () => {
@@ -54,6 +55,30 @@ describe('Brightspace syllabus source selection', () => {
       completedPasses: 1,
       loading: false
     })).toBe(true)
+  })
+
+  it('distinguishes a navigation shell from a complete syllabus document', () => {
+    const navigation = `Course Information
+Course Description
+Course Learning Outcomes
+Attendance Policy
+Course Schedule
+Late Work
+Absences
+Academic Integrity
+Course Evaluation`
+    const complete = `${navigation}
+Course Information
+This section contains detailed meeting information for every student enrolled in the course.
+Course Description
+This course introduces systems programming, memory management, concurrency, and secure software development practices.
+Attendance Policy
+Students are expected to attend lectures and participate in the scheduled laboratory meetings each week.
+Academic Integrity
+All submitted programs must be the student's own work and follow the university academic integrity policy.`
+
+    expect(simpleSyllabusTextLooksComplete(navigation)).toBe(false)
+    expect(simpleSyllabusTextLooksComplete(complete)).toBe(true)
   })
 })
 

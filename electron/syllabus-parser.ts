@@ -444,22 +444,30 @@ function section(text: string, heading: string, nextHeadings: string[]) {
 
 function sectionAny(text: string, headings: string[], nextHeadings: string[]) {
   const lines = text.split('\n').map((line) => line.trim())
-  let inline = ''
-  const start = lines.findIndex((line) => {
-    const match = matchHeading(line, headings)
-    if (match !== null) inline = match
-    return match !== null
-  })
-  if (start < 0) return ''
   const stopNames = [...nextHeadings, ...COMMON_SECTION_HEADINGS]
-  const body: string[] = inline ? [inline] : []
-  for (let index = start + 1; index < lines.length; index++) {
-    const line = lines[index]
-    if (matchHeading(line, stopNames) !== null) break
-    if (/^Page \d+ of \d+$/i.test(line)) continue
-    body.push(line)
+  const candidates: string[] = []
+  for (let start = 0; start < lines.length; start++) {
+    const inline = matchHeading(lines[start], headings)
+    if (inline === null) continue
+    const body: string[] = inline ? [inline] : []
+    for (let index = start + 1; index < lines.length; index++) {
+      const line = lines[index]
+      if (matchHeading(line, stopNames) !== null) break
+      if (/^Page \d+ of \d+$/i.test(line)) continue
+      body.push(line)
+    }
+    const candidate = body.join('\n').trim().slice(0, 8000)
+    if (candidate) candidates.push(candidate)
   }
-  return body.join('\n').trim().slice(0, 8000)
+  return candidates.sort((left, right) => sectionBodyScore(right) - sectionBodyScore(left))[0] ?? ''
+}
+
+function sectionBodyScore(value: string) {
+  const lines = value.split('\n').map((line) => line.trim()).filter(Boolean)
+  const words = value.match(/[A-Za-z0-9]+/g)?.length ?? 0
+  const sentences = value.match(/[.!?](?:\s|$)/g)?.length ?? 0
+  const headingOnlyLines = lines.filter((line) => matchHeading(line, COMMON_SECTION_HEADINGS) !== null).length
+  return Math.min(value.length, 3000) + Math.min(words, 400) * 2 + Math.min(sentences, 20) * 40 - headingOnlyLines * 200
 }
 
 const COMMON_SECTION_HEADINGS = [
@@ -469,7 +477,12 @@ const COMMON_SECTION_HEADINGS = [
   'Student Consultation Hours', 'Office Hours', 'Instructor Office Hours', 'Student Hours', 'Availability',
   'Communication', 'Course Policies', 'Attendance Policy', 'Class Attendance', 'Attendance and Participation',
   'Participation and Attendance', 'Late Policy', 'Late Work', 'Late Work Policy', 'Grading', 'Grading Scale',
-  'Grades and Grade Reports', 'Course Schedule', 'Academic Integrity', 'AI Policy', 'University Policies'
+  'Grades and Grade Reports', 'Course Schedule', 'Academic Integrity', 'AI Policy', 'University Policies',
+  'Teaching Philosophy', 'How to Succeed in this Course', 'Learning Resources, Technology & Texts',
+  'Netiquette', 'Regrade Requests', 'Absences',
+  'Nondiscrimination Statement', 'Accessibility', 'Accommodations', 'Mental Health/Wellness Statement',
+  'Emergency Preparedness', 'Student-Related Policies', 'Grade Appeals Process', 'Basic Needs Program',
+  'Course Evaluation', 'Additional Information'
 ]
 
 function matchHeading(line: string, headings: string[]) {
