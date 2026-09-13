@@ -18,8 +18,15 @@ export interface SyllabusInfo {
   courseId: string; filePath?: string | null; fileName?: string | null
   attendancePolicy: string; latePolicy: string; officeHours: string; rawSummary: string
   sourceType?: string | null; sourceExternalId?: string | null; rawText?: string | null
-  userEdited?: boolean
+  userEdited?: boolean; fieldResults?: Record<SyllabusFieldKey, SyllabusFieldResult>
 }
+
+export type SyllabusFieldKey = 'rawSummary' | 'officeHours' | 'attendancePolicy' | 'latePolicy'
+export interface SyllabusHighlight { start: number; end: number }
+export interface SyllabusEvidenceSource {
+  section: string; page: number | null; text: string; highlights: SyllabusHighlight[]; correctedText?: string
+}
+export interface SyllabusFieldResult { display: string; type: string; sources: SyllabusEvidenceSource[] }
 
 export type CurrentScoreMode = 'earned' | 'lost'
 

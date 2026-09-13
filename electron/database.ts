@@ -4,7 +4,7 @@ import initSqlJs, { Database as SqlDatabase } from 'sql.js'
 import type { BrightspaceCompletionStatus, BrightspacePayload } from './brightspace'
 import type { GradescopePayload } from './gradescope'
 import { academicCourseCode, normalizeCourseCode, normalizedCourseName } from './course-code'
-import { parseSyllabus } from './syllabus-parser'
+import { extractPdfDocument, parseSyllabus, type SyllabusFieldKey, type SyllabusFieldResult, type SyllabusSourceKind } from './syllabus-parser'
 
 type Row = Record<string, string | number | null>
 type ParsedGradingItem = ReturnType<typeof parseSyllabus>['gradingItems'][number]
@@ -70,7 +70,7 @@ export class DatabaseService {
     }
     service.db = opened
     service.migrate()
-    service.reparseStoredSyllabi()
+    await service.reparseStoredSyllabi()
     return service
   }
 
@@ -136,6 +136,7 @@ export class DatabaseService {
     this.ensureColumn('syllabus_info', 'source_external_id', 'TEXT')
     this.ensureColumn('syllabus_info', 'raw_text', 'TEXT')
     this.ensureColumn('syllabus_info', 'user_edited', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('syllabus_info', 'field_results_json', 'TEXT')
     const gradingItemsHadEditMarker = this.rows('PRAGMA table_info(grading_items)').some((item) => item.name === 'user_edited')
     this.ensureColumn('grading_items', 'points', 'REAL')
     this.ensureColumn('grading_items', 'target_points', 'REAL')
@@ -236,25 +237,37 @@ export class DatabaseService {
     for (const snapshot of snapshots.slice(20)) fs.rmSync(path.join(directory, snapshot.name), { force:true })
   }
 
-  private reparseStoredSyllabi() {
-    const parserVersion = '9'
+  private async reparseStoredSyllabi() {
+    const parserVersion = '12'
     const installedVersion = String(this.rows("SELECT value FROM settings WHERE key = 'syllabusParserVersion'")[0]?.value ?? '')
     if (installedVersion === parserVersion) return
     const stored = this.rows(`SELECT s.*, c.name, c.timezone
       FROM syllabus_info s JOIN courses c ON c.id = s.course_id
       WHERE s.source_type = 'brightspace_api' AND LENGTH(COALESCE(s.raw_text, '')) > 0`)
-    if (stored.length) this.createSafetySnapshot('before-syllabus-parser-v7')
+    if (stored.length) this.createSafetySnapshot('before-syllabus-source-refresh-v12')
     const stamp = now()
     this.db.run('BEGIN TRANSACTION')
     try {
       for (const row of stored) {
         const remoteCourseId = Number(String(row.source_external_id ?? '').match(/^brightspace:syllabus:(\d+):/)?.[1])
         if (!remoteCourseId) continue
+        let text = String(row.raw_text)
+        let pages: Array<{ page: number; text: string }> | undefined
+        const filePath = String(row.file_path ?? '')
+        if (/\.pdf$/i.test(filePath) && fs.existsSync(filePath)) {
+          try {
+            const document = await extractPdfDocument(fs.readFileSync(filePath))
+            text = document.text
+            pages = document.pages
+          } catch { /* Keep the stored text and nullable page metadata. */ }
+        }
         const parsed = parseSyllabus({
           courseId: remoteCourseId,
-          text: String(row.raw_text),
+          text,
           timezone: String(row.timezone),
-          courseName: String(row.name)
+          courseName: String(row.name),
+          sourceKind:sourceKindFromExternalId(String(row.source_external_id ?? '')),
+          pages
         })
         if (parsed.instructor) {
           this.db.run("UPDATE courses SET instructor = ?, updated_at = ? WHERE id = ? AND TRIM(COALESCE(instructor, '')) = ''",
@@ -263,16 +276,13 @@ export class DatabaseService {
         if (parsed.courseTitle && shouldReplaceImportedCourseName(String(row.name ?? ''))) {
           this.db.run('UPDATE courses SET name = ?, updated_at = ? WHERE id = ?', [parsed.courseTitle, stamp, row.course_id])
         }
-        if (!Boolean(row.user_edited)) {
-          this.db.run(`UPDATE syllabus_info SET attendance_policy = ?, late_policy = ?,
-            office_hours = ?, raw_summary = ?, updated_at = ? WHERE course_id = ?`, [
-            richerExtract(String(row.attendance_policy ?? ''), parsed.attendancePolicy),
-            richerExtract(String(row.late_policy ?? ''), parsed.latePolicy),
-            richerExtract(String(row.office_hours ?? ''), parsed.officeHours),
-            richerExtract(String(row.raw_summary ?? ''), parsed.rawSummary),
-            stamp, row.course_id
-          ])
-        }
+        const fieldResults = mergeStoredFieldResults(row, parsed.fieldResults, Boolean(row.user_edited))
+        this.db.run(`UPDATE syllabus_info SET attendance_policy = ?, late_policy = ?,
+          office_hours = ?, raw_summary = ?, field_results_json = ?, updated_at = ? WHERE course_id = ?`, [
+          fieldResults.attendancePolicy.display, fieldResults.latePolicy.display,
+          fieldResults.officeHours.display, fieldResults.rawSummary.display,
+          JSON.stringify(fieldResults), stamp, row.course_id
+        ])
         const existingGrades = this.rows('SELECT id, user_edited FROM grading_items WHERE course_id = ?', [row.course_id])
         if (plausibleParsedGrades(parsed.gradingItems)) {
           this.applyParsedGradingItems(String(row.course_id), parsed.gradingItems,
@@ -401,15 +411,16 @@ export class DatabaseService {
 
   saveSyllabus(input: any) {
     const existing = this.rows('SELECT * FROM syllabus_info WHERE course_id = ?', [input.courseId])[0]
+    const fieldResults = normalizeInputFieldResults(input, existing)
     this.db.run(`INSERT OR REPLACE INTO syllabus_info
       (course_id, file_path, file_name, attendance_policy, late_policy, office_hours, raw_summary,
-       updated_at, source_type, source_external_id, raw_text, user_edited)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`, [
+       updated_at, source_type, source_external_id, raw_text, user_edited, field_results_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`, [
       input.courseId, input.filePath ?? existing?.file_path ?? null, input.fileName ?? existing?.file_name ?? null,
-      input.attendancePolicy ?? '', input.latePolicy ?? '', input.officeHours ?? '',
-      input.rawSummary ?? '', now(), existing?.source_type ?? input.sourceType ?? null,
+      fieldResults.attendancePolicy.display, fieldResults.latePolicy.display, fieldResults.officeHours.display,
+      fieldResults.rawSummary.display, now(), existing?.source_type ?? input.sourceType ?? null,
       existing?.source_external_id ?? input.sourceExternalId ?? null,
-      existing?.raw_text ?? input.rawText ?? null
+      existing?.raw_text ?? input.rawText ?? null, JSON.stringify(fieldResults)
     ])
     this.persist()
     return this.getState()
@@ -622,24 +633,23 @@ export class DatabaseService {
           || incomingSourcePriority > existingSourcePriority
           || (incomingSourcePriority === existingSourcePriority && incomingRaw.length >= existingRaw.length)
         const manuallyEdited = Boolean(existing?.user_edited)
-        const chooseField = (column: string, incoming: string) => manuallyEdited
-          ? String(existing?.[column] ?? '')
-          : richerExtract(String(existing?.[column] ?? ''), incoming)
+        const fieldResults = mergeStoredFieldResults(existing ?? {}, syllabus.fieldResults, manuallyEdited)
         this.db.run(`INSERT OR REPLACE INTO syllabus_info
           (course_id, file_path, file_name, attendance_policy, late_policy, office_hours,
-           raw_summary, updated_at, source_type, source_external_id, raw_text, user_edited)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'brightspace_api', ?, ?, ?)`, [
+           raw_summary, updated_at, source_type, source_external_id, raw_text, user_edited, field_results_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'brightspace_api', ?, ?, ?, ?)`, [
           localCourseId,
           syllabus.filePath ?? existing?.file_path ?? null,
           syllabus.fileName ?? existing?.file_name ?? null,
-          chooseField('attendance_policy', syllabus.attendancePolicy),
-          chooseField('late_policy', syllabus.latePolicy),
-          chooseField('office_hours', syllabus.officeHours),
-          chooseField('raw_summary', syllabus.rawSummary),
+          fieldResults.attendancePolicy.display,
+          fieldResults.latePolicy.display,
+          fieldResults.officeHours.display,
+          fieldResults.rawSummary.display,
           stamp,
           incomingIsRicher ? syllabus.sourceExternalId : existing?.source_external_id ?? syllabus.sourceExternalId,
           incomingIsRicher ? incomingRaw : existingRaw,
-          manuallyEdited ? 1 : 0
+          manuallyEdited ? 1 : 0,
+          JSON.stringify(fieldResults)
         ])
         syllabiImported++
 
@@ -935,7 +945,8 @@ function mapEvent(r: Row) {
   return { id:r.id, courseId:r.course_id, title:r.title, type:r.type, dueAt:r.due_at, dueTimezone:r.due_timezone, releaseAt:r.release_at, status:r.status, sourceType:r.source_type, sourceLabel:r.source_label, sourceExternalId:r.source_external_id, rawSourceText:r.raw_source_text, confidence:r.confidence, userEdited:Boolean(r.user_edited), createdAt:r.created_at, updatedAt:r.updated_at }
 }
 function mapSyllabus(r: Row) {
-  return { courseId:r.course_id, filePath:r.file_path, fileName:r.file_name, attendancePolicy:r.attendance_policy, latePolicy:r.late_policy, officeHours:r.office_hours, rawSummary:r.raw_summary, sourceType:r.source_type, sourceExternalId:r.source_external_id, rawText:r.raw_text, userEdited:Boolean(r.user_edited), updatedAt:r.updated_at }
+  const fieldResults = completeFieldResults(r, parseFieldResultsJson(r.field_results_json))
+  return { courseId:r.course_id, filePath:r.file_path, fileName:r.file_name, attendancePolicy:fieldResults.attendancePolicy.display, latePolicy:fieldResults.latePolicy.display, officeHours:fieldResults.officeHours.display, rawSummary:fieldResults.rawSummary.display, fieldResults, sourceType:r.source_type, sourceExternalId:r.source_external_id, rawText:r.raw_text, userEdited:Boolean(r.user_edited), updatedAt:r.updated_at }
 }
 function mapDetected(r: Row) {
   return { id:r.id, courseId:r.course_id, courseCode:r.course_code, title:r.title, type:r.type, dueAt:r.due_at, dueTimezone:r.due_timezone, sourceType:r.source_type, sourceLabel:r.source_label, sourceExternalId:r.source_external_id, rawSourceText:r.raw_source_text, confidence:r.confidence, state:r.state, createdAt:r.created_at }
@@ -955,15 +966,111 @@ function canonicalImportedTitle(value: string) {
     .replace(/[^\p{L}\p{N}]+/gu, '')
 }
 
-function richerExtract(existing: string, incoming: string) {
-  const saved = existing.trim()
-  const candidate = incoming.trim()
-  if (/Course Syllabus\s*:.*\battendance\b.*\bacademic integrity\b/is.test(saved)) return candidate
-  if (!saved) return candidate
-  if (!candidate) return saved
-  // Automatic re-parsing should fill gaps and improve obviously truncated fields without
-  // replacing a useful saved extract with a shorter partial render.
-  return candidate.length > saved.length * 1.2 ? candidate : saved
+const syllabusFieldColumns: Record<SyllabusFieldKey, string> = {
+  rawSummary:'raw_summary', officeHours:'office_hours', attendancePolicy:'attendance_policy', latePolicy:'late_policy'
+}
+const syllabusFieldKeys = Object.keys(syllabusFieldColumns) as SyllabusFieldKey[]
+
+function sourceKindFromExternalId(value: string): SyllabusSourceKind {
+  const kind = value.match(/^brightspace:syllabus:\d+:([^:]+):/)?.[1]
+  return kind === 'overview-attachment' || kind === 'content-file' || kind === 'simple-syllabus-v2'
+    || kind === 'simple-syllabus' || kind === 'overview' ? kind : 'unknown'
+}
+
+function parseFieldResultsJson(value: unknown): Partial<Record<SyllabusFieldKey, SyllabusFieldResult>> {
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>
+    return Object.fromEntries(syllabusFieldKeys.flatMap((key) => {
+      const result = normalizeFieldResult(parsed[key])
+      return result ? [[key, result]] : []
+    }))
+  } catch { return {} }
+}
+
+function normalizeFieldResult(value: unknown): SyllabusFieldResult | null {
+  if (!value || typeof value !== 'object') return null
+  const item = value as Record<string, unknown>
+  if (typeof item.display !== 'string') return null
+  const sources = Array.isArray(item.sources) ? item.sources.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return []
+    const source = candidate as Record<string, unknown>
+    if (typeof source.text !== 'string') return []
+    const sourceText = source.text
+    const highlights = Array.isArray(source.highlights) ? source.highlights.flatMap((range) => {
+      if (!range || typeof range !== 'object') return []
+      const highlight = range as Record<string, unknown>
+      const start = Number(highlight.start); const end = Number(highlight.end)
+      return Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end > start && end <= sourceText.length
+        ? [{ start, end }] : []
+    }) : []
+    return [{
+      section:typeof source.section === 'string' ? source.section : '',
+      page:Number.isInteger(source.page) ? Number(source.page) : null,
+      text:sourceText,
+      highlights,
+      ...(typeof source.correctedText === 'string' ? { correctedText:source.correctedText } : {})
+    }]
+  }) : []
+  return { display:item.display, type:typeof item.type === 'string' ? item.type : 'unknown', sources }
+}
+
+function completeFieldResults(row: Row, partial: Partial<Record<SyllabusFieldKey, SyllabusFieldResult>>) {
+  return Object.fromEntries(syllabusFieldKeys.map((key) => [key, partial[key] ?? {
+    display:String(row[syllabusFieldColumns[key]] ?? ''), type:'legacy', sources:[]
+  }])) as Record<SyllabusFieldKey, SyllabusFieldResult>
+}
+
+function mergeStoredFieldResults(row: Row, incoming: Record<SyllabusFieldKey, SyllabusFieldResult>, manuallyEdited: boolean) {
+  const existing = parseFieldResultsJson(row.field_results_json)
+  return Object.fromEntries(syllabusFieldKeys.map((key) => {
+    const savedDisplay = String(row[syllabusFieldColumns[key]] ?? '')
+    const parsed = normalizeFieldResult(incoming[key]) ?? { display:'', type:'unknown', sources:[] }
+    const previous = existing[key]
+    const savedWasVerbatimExtract = Boolean(savedDisplay)
+      && comparableText(String(row.raw_text ?? '')).includes(comparableText(savedDisplay))
+    const manualDisplay = previous?.type === 'manual'
+      || (manuallyEdited && !previous && !savedWasVerbatimExtract && savedDisplay.trim() !== parsed.display.trim())
+    const display = manualDisplay || !parsed.display ? savedDisplay : parsed.display
+    const sources = mergeCorrectedSources(previous?.sources ?? [], parsed.sources)
+    return [key, {
+      display,
+      type:manualDisplay ? 'manual' : parsed.type,
+      sources
+    }]
+  })) as Record<SyllabusFieldKey, SyllabusFieldResult>
+}
+
+function mergeCorrectedSources(existing: SyllabusFieldResult['sources'], incoming: SyllabusFieldResult['sources']) {
+  const corrected = existing.filter((source) => source.correctedText !== undefined)
+  if (!corrected.length) return incoming
+  const used = new Set<number>()
+  const merged = incoming.map((source) => {
+    const exact = corrected.findIndex((candidate, index) => !used.has(index) && candidate.text === source.text)
+    const sameLocation = exact >= 0 ? exact : corrected.findIndex((candidate, index) => !used.has(index)
+      && candidate.section === source.section && candidate.page === source.page)
+    if (sameLocation < 0) return source
+    used.add(sameLocation)
+    return corrected[sameLocation]
+  })
+  corrected.forEach((source, index) => { if (!used.has(index)) merged.push(source) })
+  return merged
+}
+
+function comparableText(value: string) {
+  return value.replace(/\s+/g, ' ').trim().toLocaleLowerCase()
+}
+
+function normalizeInputFieldResults(input: Record<string, unknown>, existing?: Row) {
+  const supplied = input.fieldResults && typeof input.fieldResults === 'object'
+    ? input.fieldResults as Partial<Record<SyllabusFieldKey, unknown>> : {}
+  const previous = parseFieldResultsJson(existing?.field_results_json)
+  return Object.fromEntries(syllabusFieldKeys.map((key) => {
+    const display = typeof input[key] === 'string' ? input[key] as string : String(existing?.[syllabusFieldColumns[key]] ?? '')
+    const result = normalizeFieldResult(supplied[key]) ?? previous[key]
+    if (!result) return [key, { display, type:display ? 'manual' : 'unknown', sources:[] }]
+    return [key, { ...result, display, type:display === result.display ? result.type : 'manual' }]
+  })) as Record<SyllabusFieldKey, SyllabusFieldResult>
 }
 
 function extractTerm(value: string) {

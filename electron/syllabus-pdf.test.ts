@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractPdfText } from './syllabus-parser'
+import { extractPdfDocument, extractPdfText } from './syllabus-parser'
 
 function textPdf(value: string) {
   const escaped = value.replace(/([\\()])/g, '\\$1')
@@ -27,5 +27,12 @@ function textPdf(value: string) {
 describe('packaged-compatible PDF parsing', () => {
   it('extracts text with the explicitly embedded PDF worker', async () => {
     await expect(extractPdfText(textPdf('Daily Routine syllabus'))).resolves.toContain('Daily Routine syllabus')
+  })
+
+  it('preserves PDF page metadata for syllabus evidence', async () => {
+    const document = await extractPdfDocument(textPdf('Attendance is required.'))
+    expect(document.pages).toHaveLength(1)
+    expect(document.pages[0]).toMatchObject({ page:1 })
+    expect(document.pages[0].text).toContain('Attendance is required.')
   })
 })

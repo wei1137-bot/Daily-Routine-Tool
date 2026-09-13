@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { BrowserWindow, session, type Session } from 'electron'
-import { extractPdfText, parseSyllabus, type ParsedSyllabus } from './syllabus-parser'
+import { extractPdfDocument, parseSyllabus, type ParsedSyllabus, type SyllabusTextPage } from './syllabus-parser'
 import { academicCourseCode } from './course-code'
 import { configureAuthenticationPopups, persistentSessionWebPreferences } from './authentication-window'
 
@@ -586,6 +586,7 @@ export class BrightspaceService {
     let filePath: string | null = null
     let fileName: string | null = null
     let documentText = ''
+    let documentPages: SyllabusTextPage[] = []
     try {
       const overview = await this.bearerJson(browserSession, `${baseUrl}/d2l/api/le/${LE_VERSION}/${course.id}/overview`, token)
       overviewText = htmlToText(typeof overview?.Description?.Text === 'string' ? overview.Description.Text : '')
@@ -605,7 +606,9 @@ export class BrightspaceService {
       const fallback = `syllabus-overview-${course.id}${contentType.includes('pdf') ? '.pdf' : '.txt'}`
       const name = filenameFromDisposition(response.headers.get('content-disposition'), fallback)
       if (contentType.includes('pdf') || data.subarray(0, 4).toString('ascii') === '%PDF') {
-        documentText = await extractPdfText(data)
+        const document = await extractPdfDocument(data)
+        documentText = document.text
+        documentPages = document.pages
       } else if (contentType.startsWith('text/') || /\.(txt|html?)$/i.test(name)) {
         documentText = contentType.includes('html') || /\.html?$/i.test(name)
           ? htmlToText(data.toString('utf8')) : data.toString('utf8')
@@ -631,7 +634,7 @@ export class BrightspaceService {
     if (documentText) {
       return parseSyllabus({
         courseId: course.id, text: documentText, filePath, fileName, timezone,
-        courseName: course.name, sourceKind: 'overview-attachment'
+        courseName: course.name, sourceKind: 'overview-attachment', pages: documentPages
       })
     }
 
@@ -658,7 +661,9 @@ export class BrightspaceService {
         const fallback = `syllabus-${candidate.topicId}${contentType.includes('pdf') ? '.pdf' : '.txt'}`
         const name = filenameFromDisposition(response.headers.get('content-disposition'), fallback)
         if (contentType.includes('pdf') || data.subarray(0, 4).toString('ascii') === '%PDF') {
-          documentText = await extractPdfText(data)
+          const document = await extractPdfDocument(data)
+          documentText = document.text
+          documentPages = document.pages
         } else if (contentType.startsWith('text/') || /\.(txt|html?)$/i.test(name)) {
           documentText = contentType.includes('html') || /\.html?$/i.test(name) ? htmlToText(data.toString('utf8')) : data.toString('utf8')
         } else {
@@ -682,7 +687,7 @@ export class BrightspaceService {
     if (documentText) {
       return parseSyllabus({
         courseId: course.id, text: documentText, filePath, fileName, timezone,
-        courseName: course.name, sourceKind: 'content-file'
+        courseName: course.name, sourceKind: 'content-file', pages: documentPages
       })
     }
 

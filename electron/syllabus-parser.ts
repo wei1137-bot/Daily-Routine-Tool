@@ -21,17 +21,39 @@ export interface ParsedSyllabus {
   officeHours: string
   attendancePolicy: string
   latePolicy: string
+  fieldResults: Record<SyllabusFieldKey, SyllabusFieldResult>
   gradingItems: Array<{ id: string; label: string; weight: number; points: number | null }>
   events: Array<{ id: string; title: string; type: 'exam'; dueAt: string }>
 }
 
+export type SyllabusFieldKey = 'rawSummary' | 'officeHours' | 'attendancePolicy' | 'latePolicy'
+export interface SyllabusHighlight { start: number; end: number }
+export interface SyllabusEvidenceSource {
+  section: string
+  page: number | null
+  text: string
+  highlights: SyllabusHighlight[]
+  correctedText?: string
+}
+export interface SyllabusFieldResult {
+  display: string
+  type: string
+  sources: SyllabusEvidenceSource[]
+}
+export interface SyllabusTextPage { page: number; text: string }
+
 export type SyllabusSourceKind = 'overview-attachment' | 'content-file' | 'simple-syllabus-v2' | 'simple-syllabus' | 'overview' | 'unknown'
 
 export async function extractPdfText(data: Buffer) {
+  return (await extractPdfDocument(data)).text
+}
+
+export async function extractPdfDocument(data: Buffer): Promise<{ text: string; pages: SyllabusTextPage[] }> {
   const parser = new PDFParse({ data })
   try {
     const result = await parser.getText()
-    return normalizeText(result.text)
+    const pages = result.pages.map((page) => ({ page:page.num, text:normalizeText(page.text) }))
+    return { text:pages.map((page) => page.text).join('\n\n').trim(), pages }
   } finally {
     await parser.destroy()
   }
@@ -45,30 +67,37 @@ export function parseSyllabus(input: {
   timezone: string
   courseName: string
   sourceKind?: SyllabusSourceKind
+  pages?: SyllabusTextPage[]
 }) : ParsedSyllabus {
-  const text = normalizeText(input.text)
+  const normalizedPages = input.pages?.map((page) => ({ page:page.page, text:normalizeText(page.text) }))
+  const text = normalizedPages?.length ? normalizedPages.map((page) => page.text).join('\n\n').trim() : normalizeText(input.text)
   const sourceKind = input.sourceKind ?? 'unknown'
   const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 20)
   const sourceExternalId = `brightspace:syllabus:${input.courseId}:${sourceKind}:${fingerprint}`
   const courseTitle = extractCourseTitle(text)
-  const rawSummary = firstNonEmpty(
+  const rawSummarySource = firstNonEmpty(
     sectionAny(text, ['Course Description', 'Course Overview', 'Catalog Description', 'About This Course'],
       ['Course Learning Outcomes', 'Learning Objectives', 'Prerequisites', 'Instructor Contact Information']),
     sectionAny(text, ['Course Information'],
       ['Course Learning Outcomes', 'Learning Objectives', 'Instructor(s) Contact Information', 'Instructor Information'])
   )
-  const officeHours = firstNonEmpty(
+  const officeHoursSource = firstNonEmpty(
     sectionAny(text, ['Student Consultation Hours', 'Office Hours', 'Instructor Office Hours', 'Student Hours', 'Availability'],
       ['Additional Information', 'Course Description', 'Course Learning Outcomes', 'Course Policies', 'Communication']),
     extractOfficeHoursFallback(text)
   )
   const instructor = extractInstructor(text)
-  const attendancePolicy = firstNonEmpty(
+  const attendancePolicySource = firstNonEmpty(
     sectionAny(text, ['Attendance Policy', 'Class Attendance', 'Attendance and Participation', 'Participation and Attendance'],
       ['Course Schedule', 'Academic Integrity', 'AI Policy', 'Late Policy', 'Late Work', 'Grading', 'University Policies']),
     extractPolicyParagraph(text, /\battendance\b/i, /\b(expected|absence|absent|participation|participate|attend|mandatory|must)\b/i)
   )
-  const latePolicy = extractLatePolicy(text)
+  const latePolicySource = extractLatePolicy(text)
+  const rawSummary = compactFieldDisplay(rawSummarySource, 280, 2)
+  const officeHours = compactFieldDisplay(officeHoursSource, 220, 2)
+  const attendancePolicy = summarizeAttendancePolicy(attendancePolicySource)
+  const latePolicy = summarizeLatePolicy(latePolicySource)
+  const fieldResults = buildFieldResults(text, normalizedPages ?? [], { rawSummary, officeHours, attendancePolicy, latePolicy })
   const gradingItems = extractGradingItems(text, input.courseId)
   const events = extractExamEvents(text, input.courseId, input.courseName, input.timezone)
   return {
@@ -84,9 +113,282 @@ export function parseSyllabus(input: {
     officeHours,
     attendancePolicy,
     latePolicy,
+    fieldResults,
     gradingItems,
     events
   }
+}
+
+function compactFieldDisplay(value: string, maximumLength: number, maximumSentences: number) {
+  const cleaned = cleanFieldText(value)
+  if (!cleaned) return ''
+  const sentences = cleaned.split(/(?<=[.!?])\s+/).filter(Boolean)
+  let display = sentences.slice(0, maximumSentences).join(' ')
+  if (!display) display = cleaned
+  if (display.length <= maximumLength) return display
+  const shortened = display.slice(0, maximumLength + 1).replace(/\s+\S*$/, '').trim()
+  return `${shortened || display.slice(0, maximumLength).trimEnd()}…`
+}
+
+function cleanFieldText(value: string) {
+  return value.split('\n').map((line) => line.trim()).filter((line) => line
+    && !/^(?:attendance policy|class attendance|late work(?: policy)?|late policy|course description|course overview|absences)$/i.test(line))
+    .join(' ').replace(/\s+/g, ' ').trim()
+}
+
+function summarizeAttendancePolicy(value: string) {
+  const cleaned = cleanFieldText(value)
+  if (!cleaned) return ''
+  if (/\bno attendance is taken\b/i.test(cleaned)
+    && /\bboth midterms are held in person and attendance at them is required\b/i.test(cleaned)) {
+    return 'No regular attendance is taken; both in-person midterms require attendance.'
+  }
+  return matchingSentence(cleaned, [
+    /\bstudents? are (?:highly )?encouraged to be present\b/i,
+    /\bit is in your best interest to attend all lectures and labs\b/i,
+    /\bstudents? are expected to be present\b/i,
+    /\bno attendance is taken\b/i,
+    /\battendance[^.!?]{0,80}(?:required|mandatory|expected)\b/i,
+    /\b(?:required|mandatory|expected) to attend\b/i
+  ], 220) || compactFieldDisplay(cleaned, 220, 1)
+}
+
+function summarizeLatePolicy(value: string) {
+  const cleaned = cleanFieldText(value)
+  if (!cleaned) return ''
+  if (/\bgrace period\b/i.test(cleaned) && /\b(?:per|each) day\b/i.test(cleaned)) {
+    return compactFieldDisplay(cleaned, 240, 2)
+  }
+  return matchingSentence(cleaned, [
+    /\blate submissions? will not be accepted\b/i,
+    /\bno (?:homework|work|submissions?) will be accepted\b/i,
+    /\b(?:late|penalt|scored as zero|submitted on time)\b/i
+  ], 220) || compactFieldDisplay(cleaned, 220, 1)
+}
+
+function matchingSentence(value: string, patterns: RegExp[], maximumLength: number) {
+  const sentences = value.split(/(?<=[.!?])\s+/).filter(Boolean)
+  const sentence = sentences.find((candidate) => patterns.some((pattern) => pattern.test(candidate)))
+  return sentence ? compactFieldDisplay(sentence, maximumLength, 1) : ''
+}
+
+function buildFieldResults(text: string, pages: SyllabusTextPage[], displays: Record<SyllabusFieldKey, string>): Record<SyllabusFieldKey, SyllabusFieldResult> {
+  const pageRanges = documentPageRanges(pages)
+  const attendanceCandidates = evidenceFromPatterns(text, pageRanges, 'Attendance Policy', [
+    /\bno attendance is taken\b/gi,
+    /\bboth midterms are held in person and attendance at them is required\b/gi,
+    /\bstudents? are (?:highly )?encouraged to be present\b/gi,
+    /\bstudents? are expected to be present\b/gi,
+    /\bit is in your best interest to attend all lectures and labs\b/gi,
+    /\battendance (?:at\s+\w+\s+)?is (?:required|mandatory|expected)\b/gi,
+    /\b(?:required|mandatory|expected) to attend\b/gi
+  ])
+  const attendanceSources = preferredSectionEvidence(attendanceCandidates, /attendance|absences?/i)
+  const lateCandidates = evidenceFromPatterns(text, pageRanges, 'Late Work', [
+    /\blate submissions? will not be accepted unless pre-approved\.?/gi,
+    /\bno (?:homework|work|submissions?) will be accepted after [^.!?\n]+/gi,
+    /\b(?:homeworks? completed late|late movie worksheets?|late submissions?|work submitted late)[^.!?]{0,150}?(?:\d+\s*(?:%|points?)\s*(?:off|penalty)?[^.!?]{0,80}?(?:per|each) day late|penalty[^.!?]{0,80}?(?:per|each) day)[^.!?]*\.?/gi,
+    /\bpenalty of \d+% per day late with a \d+ hour maximum\b/gi,
+    /\binitial grace period of [^.!?]{0,100}?reduced \d+% penalty applies\b/gi,
+    /\blate work is accepted within \d+ hours? for a \d+% penalty\b/gi,
+    /\binvalid \([^)]*\) late assignments?\/submissions? are scored as zero\b/gi
+  ])
+  const lateSources = preferredSectionEvidence(lateCandidates, /late|assignments?|homework|movies?/i)
+  return {
+    rawSummary: {
+      display:displays.rawSummary,
+      type:displays.rawSummary ? 'course_description' : 'unknown',
+      sources:evidenceForDisplay(text, pageRanges, displays.rawSummary, 'Course Description', 2)
+    },
+    officeHours: {
+      display:displays.officeHours,
+      type:officeHoursType(displays.officeHours),
+      sources:evidenceForDisplay(text, pageRanges, displays.officeHours, 'Student Consultation Hours', 2)
+    },
+    attendancePolicy: {
+      display:displays.attendancePolicy,
+      type:attendanceType(`${displays.attendancePolicy}\n${attendanceSources.map((source) => source.text).join('\n')}`),
+      sources:attendanceSources.length ? attendanceSources : evidenceForDisplay(text, pageRanges, displays.attendancePolicy, 'Attendance Policy', 2)
+    },
+    latePolicy: {
+      display:displays.latePolicy,
+      type:latePolicyType(`${displays.latePolicy}\n${lateSources.map((source) => source.text).join('\n')}`),
+      sources:lateSources.length ? lateSources : evidenceForDisplay(text, pageRanges, displays.latePolicy, 'Late Work', 2)
+    }
+  }
+}
+
+function preferredSectionEvidence(sources: SyllabusEvidenceSource[], sectionPattern: RegExp) {
+  const preferred = sources.filter((source) => sectionPattern.test(source.section))
+  return preferred.length ? preferred : sources
+}
+
+function documentPageRanges(pages: SyllabusTextPage[]) {
+  let cursor = 0
+  return pages.map((page, index) => {
+    const range = { page:page.page, start:cursor, end:cursor + page.text.length }
+    cursor = range.end + (index === pages.length - 1 ? 0 : 2)
+    return range
+  })
+}
+
+function evidenceForDisplay(text: string, pages: ReturnType<typeof documentPageRanges>, display: string, fallbackSection: string, sentenceCount: number) {
+  const value = display.trim()
+  if (!value) return []
+  const tokens = value.split(/\s+/).slice(0, 24)
+  if (!tokens.length) return []
+  const pattern = new RegExp(tokens.map(escapeRegex).join('\\s+'), 'i')
+  const match = pattern.exec(text)
+  if (!match || match.index === undefined) return []
+  const context = evidenceContext(text, pages, match.index, match.index + match[0].length, sentenceCount)
+  const bounds = context.bounds
+  const untrimmed = text.slice(bounds.start, bounds.end)
+  const snippet = untrimmed.trim()
+  const snippetStart = bounds.start + untrimmed.indexOf(snippet)
+  const highlightedStart = Math.max(0, match.index - snippetStart)
+  const highlightedEnd = Math.min(snippet.length, match.index + match[0].length - snippetStart)
+  return [{ section:context.section ?? fallbackSection, page:context.page, text:snippet,
+    highlights:highlightedEnd > highlightedStart ? [{ start:highlightedStart, end:highlightedEnd }] : [] }]
+}
+
+function evidenceFromPatterns(text: string, pages: ReturnType<typeof documentPageRanges>, fallbackSection: string, patterns: RegExp[]) {
+  const found: Array<{
+    start: number; end: number; section: string; page: number | null
+    highlights: SyllabusHighlight[]
+  }> = []
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const matchStart = match.index ?? -1
+      if (matchStart < 0) continue
+      const matchEnd = matchStart + match[0].length
+      const context = evidenceContext(text, pages, matchStart, matchEnd, 1)
+      const bounds = context.bounds
+      const untrimmed = text.slice(bounds.start, bounds.end)
+      const snippet = untrimmed.trim()
+      if (!snippet || snippet.length > 1200) continue
+      const trimOffset = untrimmed.indexOf(snippet)
+      const snippetStart = bounds.start + trimOffset
+      const snippetEnd = snippetStart + snippet.length
+      const section = context.section ?? fallbackSection
+      const page = context.page
+      const overlapping = found.find((source) => source.section === section && source.page === page
+        && snippetStart <= source.end + 160 && snippetEnd + 160 >= source.start)
+      if (overlapping) {
+        overlapping.start = Math.min(overlapping.start, snippetStart)
+        overlapping.end = Math.max(overlapping.end, snippetEnd)
+        overlapping.highlights.push({ start:matchStart, end:matchEnd })
+      } else {
+        found.push({ start:snippetStart, end:snippetEnd, section, page, highlights:[{ start:matchStart, end:matchEnd }] })
+      }
+    }
+  }
+  return found.sort((a, b) => a.start - b.start).slice(0, 8).map((source) => ({
+    section:source.section,
+    page:source.page,
+    text:text.slice(source.start, source.end),
+    highlights:mergeHighlights(source.highlights.map((range) => ({
+      start:Math.max(0, range.start - source.start),
+      end:Math.min(source.end - source.start, range.end - source.start)
+    })))
+  }))
+}
+
+function sentenceWindow(text: string, start: number, end: number, sentenceCount: number) {
+  let snippetStart = start
+  for (let count = 0; count < 1; count++) {
+    const boundary = text.slice(0, snippetStart).search(/[.!?](?:\s+)[^.!?]*$/s)
+    snippetStart = boundary >= 0 ? boundary + 1 : Math.max(0, text.lastIndexOf('\n', snippetStart - 1) + 1)
+  }
+  let snippetEnd = end
+  for (let count = 0; count < sentenceCount; count++) {
+    const tail = text.slice(snippetEnd)
+    const boundary = tail.search(/[.!?](?=\s|$)/)
+    if (boundary < 0) { snippetEnd = Math.min(text.length, text.indexOf('\n', snippetEnd) >= 0 ? text.indexOf('\n', snippetEnd) : text.length); break }
+    snippetEnd += boundary + 1
+  }
+  return { start:snippetStart, end:snippetEnd }
+}
+
+function evidenceContext(text: string, pages: ReturnType<typeof documentPageRanges>, start: number, end: number, sentenceCount: number) {
+  const sentence = sentenceWindow(text, start, end, sentenceCount)
+  const section = sectionRangeAt(text, start)
+  const page = pages.find((candidate) => start >= candidate.start && start <= candidate.end)
+  return {
+    bounds:{
+      start:Math.max(sentence.start, section?.contentStart ?? 0, page?.start ?? 0),
+      end:Math.min(sentence.end, section?.end ?? text.length, page?.end ?? text.length)
+    },
+    section:section?.name ?? null,
+    page:page?.page ?? null
+  }
+}
+
+function sectionRangeAt(text: string, offset: number) {
+  const headings: Array<{ name: string; start: number; contentStart: number }> = []
+  for (const match of text.matchAll(/^([^\n]{1,100})$/gm)) {
+    const name = evidenceHeading(match[1])
+    if (!name || match.index === undefined) continue
+    const lineEnd = match.index + match[0].length
+    headings.push({ name, start:match.index, contentStart:lineEnd + (text[lineEnd] === '\n' ? 1 : 0) })
+  }
+  let index = -1
+  for (let candidate = headings.length - 1; candidate >= 0; candidate--) {
+    if (headings[candidate].start <= offset) {
+      index = candidate
+      break
+    }
+  }
+  if (index < 0) return null
+  return { ...headings[index], end:headings[index + 1]?.start ?? text.length }
+}
+
+function evidenceHeading(line: string) {
+  const stripped = line.replace(/^\s*(?:(?:section\s+)?\d+(?:\.\d+)*|[IVXLC]+|[A-Z])\s*[.)\-:]\s*/i, '').trim().replace(/[:\-–—]\s*$/, '')
+  const headings = [...COMMON_SECTION_HEADINGS,
+    'Assignments', 'Homework Assignments', 'Movies and Movie Worksheets', 'In-class quizzes', 'Absences', 'Additional Information']
+  return headings.find((heading) => normalizeHeading(stripped) === normalizeHeading(heading)) ?? null
+}
+
+function mergeHighlights(highlights: SyllabusHighlight[]) {
+  const ordered = highlights.filter((range) => range.end > range.start).sort((a, b) => a.start - b.start)
+  const merged: SyllabusHighlight[] = []
+  for (const range of ordered) {
+    const previous = merged.at(-1)
+    if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end)
+    else merged.push({ ...range })
+  }
+  return merged
+}
+
+function officeHoursType(value: string) {
+  if (!value.trim()) return 'unknown'
+  const appointment = /by appointment/i.test(value)
+  const scheduled = /\b(?:Mon|Tue|Wed|Thu|Fri|Monday|Tuesday|Wednesday|Thursday|Friday)\b|\d{1,2}(?::|\.)\d{2}\s*(?:am|pm)/i.test(value)
+  return appointment && scheduled ? 'scheduled_or_appointment' : appointment ? 'appointment_only' : scheduled ? 'scheduled' : 'provided'
+}
+
+function attendanceType(value: string) {
+  const absent = /\bno attendance is taken\b/i.test(value)
+  const required = /\b(?:attendance[^.!?]{0,50}(?:required|mandatory)|(?:required|mandatory) to attend)\b/i.test(value)
+  if (absent && required) return 'mixed'
+  if (absent) return 'not_taken'
+  if (required) return 'required'
+  if (/\bexpected to (?:attend|be present)\b/i.test(value)) return 'expected'
+  if (/\bencouraged to (?:attend|be present)\b/i.test(value)) return 'encouraged'
+  return value.trim() ? 'provided' : 'unknown'
+}
+
+function latePolicyType(value: string) {
+  if (/\bgrace period\b/i.test(value) && /\b(?:per|each) day\b/i.test(value)) return 'grace_then_daily_penalty'
+  if (/\b(?:will not|not be) accepted\b/i.test(value)) return 'no_late'
+  if (/\bwithin \d+ hours?\b/i.test(value) && /\bpenalty\b/i.test(value)) return 'fixed_window_penalty'
+  if (/\b(?:per|each) day late\b/i.test(value)) return 'daily_penalty'
+  if (/\bpenalty\b|\bscored as zero\b/i.test(value)) return 'fixed_penalty'
+  return value.trim() ? 'provided' : 'unknown'
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function extractCourseTitle(text: string) {

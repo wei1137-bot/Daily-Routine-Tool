@@ -1,18 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, ChevronDown, ChevronRight, ChevronUp, ExternalLink, FileText, Pencil, Plus, Upload, X } from 'lucide-react'
 import { DateTime } from 'luxon'
-import type { AcademicEvent, Course, EventStatus, GradingItem, SyllabusInfo } from '../domain/types'
+import type { AcademicEvent, Course, EventStatus, GradingItem, SyllabusFieldKey, SyllabusFieldResult, SyllabusInfo } from '../domain/types'
 import { eventDateTime, sortEvents } from '../domain/event/eventUtils'
 import { EventRow } from '../components/EventRow'
-import { courseColorClass, courseColorStyle } from '../domain/courseColor'
+import { courseColorClass, courseColorStyle, courseColorVariableStyle } from '../domain/courseColor'
 import { useI18n } from '../i18n'
-import { Modal } from '../components/Modal'
 import { SyllabusDocument } from '../components/SyllabusDocument'
+import { SyllabusFieldCard } from '../components/SyllabusFieldCard'
 import { gradeAThresholdPercent, gradeContribution, gradingModeFor, projectedGrade, toLossOnlyGradingItems, type GradingMode } from '../domain/grading'
 
 type Tab = 'deadlines' | 'syllabus'
 type UpcomingRange = '14' | '30' | 'all'
-type SyllabusField = 'rawSummary' | 'officeHours' | 'attendancePolicy' | 'latePolicy'
 type GradePanel = 'breakdown' | 'planner'
 
 export function CoursePage({ course, events, syllabus, gradingItems, gradingDisplayMode, gradingTarget, onSaveCourse, onEditCourse, onAddEvent, onAddExam, onOpenEvent, onStatus, onSaveSyllabus, onSaveGrades }: {
@@ -36,10 +35,7 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
   const [upcomingRange, setUpcomingRange] = useState<UpcomingRange>('14')
   const [completedExpanded, setCompletedExpanded] = useState(false)
   const [syllabusViewerOpen, setSyllabusViewerOpen] = useState(false)
-  const [activeSyllabusField, setActiveSyllabusField] = useState<SyllabusField>()
-  const [fieldEditing, setFieldEditing] = useState(false)
-  const [fieldDraft, setFieldDraft] = useState('')
-  useEffect(() => { setNotes(course.notes); setTab('deadlines'); setUpcomingRange('14'); setCompletedExpanded(false); setSyllabusViewerOpen(false); setActiveSyllabusField(undefined); setGradePanel('breakdown'); setGradePlanDirty(false); setEditingGradeId(undefined); setGradeEditSnapshot(undefined) }, [course.id])
+  useEffect(() => { setNotes(course.notes); setTab('deadlines'); setUpcomingRange('14'); setCompletedExpanded(false); setSyllabusViewerOpen(false); setGradePanel('breakdown'); setGradePlanDirty(false); setEditingGradeId(undefined); setGradeEditSnapshot(undefined) }, [course.id])
   useEffect(() => { setSyllabusDraft(syllabus ?? blankSyllabus(course.id)); setGradesDraft(lossOnlyGrades(gradingItems, gradingDisplayMode)); setGradeTargetDraft(gradingTarget) }, [course.id, syllabus, gradingItems, gradingDisplayMode, gradingTarget])
   useEffect(() => {
     if (notes === course.notes) return
@@ -71,26 +67,18 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
       onSaveSyllabus(next)
     }
   }
-  const syllabusFields: Array<{ key: SyllabusField; label: string; placeholder: string }> = [
+  const syllabusFields: Array<{ key: SyllabusFieldKey; label: string; placeholder: string }> = [
     { key:'rawSummary', label:t('courseSummary'), placeholder:t('summaryPlaceholder') },
     { key:'officeHours', label:t('officeHours'), placeholder:t('noDetailsYet') },
     { key:'attendancePolicy', label:t('attendancePolicy'), placeholder:t('noDetailsYet') },
     { key:'latePolicy', label:t('latePolicy'), placeholder:t('noDetailsYet') }
   ]
-  const openSyllabusField = (key: SyllabusField) => {
-    setActiveSyllabusField(key)
-    setFieldDraft(syllabusDraft[key])
-    setFieldEditing(false)
-  }
-  const closeSyllabusField = () => { setActiveSyllabusField(undefined); setFieldEditing(false) }
-  const saveSyllabusField = () => {
-    if (!activeSyllabusField) return
-    const next = { ...syllabusDraft, [activeSyllabusField]:fieldDraft }
+  const saveSyllabusField = (key: SyllabusFieldKey, result: SyllabusFieldResult) => {
+    const next = { ...syllabusDraft, [key]:result.display,
+      fieldResults:{ ...syllabusFieldResults(syllabusDraft), [key]:result } }
     setSyllabusDraft(next)
     onSaveSyllabus(next)
-    closeSyllabusField()
   }
-  const activeFieldDefinition = syllabusFields.find((field) => field.key === activeSyllabusField)
   const setGradeValue = (index: number, patch: Partial<GradingItem>) => setGradesDraft((all) => all.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
   const setPlannerGradeValue = (index: number, patch: Partial<GradingItem>) => {
     setGradeValue(index, patch)
@@ -173,10 +161,12 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
     </div>}
     {tab === 'syllabus' && <div className="tab-content syllabus-layout">
       <section className="content-section"><div className="section-heading"><div><p className="eyebrow">{t('sourceDocument')}</p><h2>{t('syllabus')}</h2></div></div>
-        <div className="syllabus-field-grid">{syllabusFields.map((field) => <button className="syllabus-field-card" key={field.key} onClick={() => openSyllabusField(field.key)}>
-          <span className="syllabus-field-heading"><strong>{field.label}</strong><ChevronRight size={16}/></span>
-          <span className={`syllabus-field-preview ${syllabusDraft[field.key] ? '' : 'empty'}`}>{syllabusDraft[field.key] || field.placeholder}</span>
-        </button>)}</div>
+        <div className="syllabus-field-grid" style={courseColorVariableStyle(course.colorKey)}>{syllabusFields.map((field) => <SyllabusFieldCard
+          key={`${course.id}:${field.key}`} label={field.label} placeholder={field.placeholder}
+          result={syllabusFieldResults(syllabusDraft)[field.key]} sourceUnavailable={t('sourceUnavailable')}
+          parsedAnswer={t('parsedAnswer')} manuallyCorrected={t('manuallyCorrected')} holdOriginal={t('holdOriginal')}
+          cancelLabel={t('cancel')} pageLabel={(page) => locale === 'zh' ? `第 ${page} 页` : `Page ${page}`}
+          onSave={(result) => saveSyllabusField(field.key, result)}/>)}</div>
         <div className="syllabus-source-actions">
           <button className="compact-document compact-document-view syllabus-document-card" onClick={() => setSyllabusViewerOpen(true)}>{syllabusDraft.rawText || syllabusDraft.rawSummary ? <FileText size={20}/> : <Upload size={20}/>}<span><strong>{syllabusDraft.fileName || (syllabusDraft.sourceType === 'brightspace_api' ? t('brightspaceSyllabus') : t('attachPdf'))}</strong><small>{t('viewFullSyllabus')}</small></span><ChevronRight size={15}/></button>
         </div>
@@ -233,17 +223,6 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
         </>}
       </section>
     </div>}
-    {activeSyllabusField && activeFieldDefinition && <Modal title={activeFieldDefinition.label} onClose={closeSyllabusField} wide className="syllabus-field-modal">
-      <div className="syllabus-field-modal-body">
-        {fieldEditing
-          ? <textarea autoFocus value={fieldDraft} onChange={(event) => setFieldDraft(event.target.value)} placeholder={activeFieldDefinition.placeholder}/>
-          : <div className={`syllabus-field-reading ${fieldDraft ? '' : 'empty'}`}>{fieldDraft || activeFieldDefinition.placeholder}</div>}
-      </div>
-      <footer className="syllabus-field-modal-actions">
-        {fieldEditing ? <span/> : <button className="button secondary" onClick={() => setFieldEditing(true)}><Pencil size={14}/>{t('edit')}</button>}
-        <div>{fieldEditing ? <><button className="button secondary" onClick={() => { setFieldDraft(syllabusDraft[activeSyllabusField]); setFieldEditing(false) }}>{t('cancel')}</button><button className="button primary" onClick={saveSyllabusField}>{t('saveChanges')}</button></> : <button className="button primary" onClick={closeSyllabusField}>{t('done')}</button>}</div>
-      </footer>
-    </Modal>}
     {syllabusViewerOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSyllabusViewerOpen(false) }}>
       <section className="modal wide syllabus-viewer" role="dialog" aria-modal="true" aria-label={t('fullSyllabus')}>
         <header><div><p className="eyebrow">{t('sourceDocument')}</p><h2>{syllabusDraft.fileName || `${course.code} ${t('syllabus')}`}</h2></div><button className="icon-button" aria-label={t('closeSyllabus')} onClick={() => setSyllabusViewerOpen(false)}><X size={18}/></button></header>
@@ -255,5 +234,11 @@ export function CoursePage({ course, events, syllabus, gradingItems, gradingDisp
 }
 
 const blankSyllabus = (courseId: string): SyllabusInfo => ({ courseId, attendancePolicy:'', latePolicy:'', officeHours:'', rawSummary:'' })
+const syllabusFieldResults = (syllabus: SyllabusInfo): Record<SyllabusFieldKey, SyllabusFieldResult> => ({
+  rawSummary:syllabus.fieldResults?.rawSummary ?? { display:syllabus.rawSummary, type:'legacy', sources:[] },
+  officeHours:syllabus.fieldResults?.officeHours ?? { display:syllabus.officeHours, type:'legacy', sources:[] },
+  attendancePolicy:syllabus.fieldResults?.attendancePolicy ?? { display:syllabus.attendancePolicy, type:'legacy', sources:[] },
+  latePolicy:syllabus.fieldResults?.latePolicy ?? { display:syllabus.latePolicy, type:'legacy', sources:[] }
+})
 const optionalNumber = (value: string) => value === '' ? null : Number(value)
 const lossOnlyGrades = (items: GradingItem[], fallback: GradingMode) => toLossOnlyGradingItems(items, gradingModeFor(items, fallback))

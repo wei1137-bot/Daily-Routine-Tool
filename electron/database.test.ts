@@ -8,6 +8,133 @@ import { parseSyllabus } from './syllabus-parser'
 const temporaryDirectories: string[] = []
 
 describe('syllabus source safety', () => {
+  it('round-trips structured evidence while keeping original and corrected text separate', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-syllabus-evidence-'))
+    temporaryDirectories.push(directory)
+    const database = await DatabaseService.create(path.join(directory, 'test.sqlite'))
+    database.saveCourse({
+      id:'evidence-course', code:'TEST 101', name:'Evidence course', instructor:'', term:'Fall 2026',
+      colorKey:'blue', timezone:'America/New_York', notes:''
+    })
+    const parsed = parseSyllabus({
+      courseId:101, courseName:'Evidence course', timezone:'America/New_York',
+      text:'Attendance Policy\nAttendance at both exams is required.\nCourse Schedule'
+    })
+    const source = parsed.fieldResults.attendancePolicy.sources[0]
+    const correctedText = source.text.replace('both exams', 'both in-person exams')
+    database.saveSyllabus({
+      courseId:'evidence-course',
+      attendancePolicy:'Both in-person exams require attendance.',
+      latePolicy:'', officeHours:'', rawSummary:'',
+      fieldResults:{
+        ...parsed.fieldResults,
+        attendancePolicy:{
+          ...parsed.fieldResults.attendancePolicy,
+          display:'Both in-person exams require attendance.',
+          sources:[{ ...source, correctedText }]
+        }
+      }
+    })
+
+    const saved = database.getState().syllabi.find((item) => item.courseId === 'evidence-course')!
+    expect(saved.attendancePolicy).toBe('Both in-person exams require attendance.')
+    expect(saved.fieldResults.attendancePolicy.sources[0].text).toBe(source.text)
+    expect(saved.fieldResults.attendancePolicy.sources[0].correctedText).toBe(correctedText)
+  })
+
+  it('upgrades legacy verbatim policy blocks to concise summaries without losing evidence', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-syllabus-summary-'))
+    temporaryDirectories.push(directory)
+    const filePath = path.join(directory, 'test.sqlite')
+    const database = await DatabaseService.create(filePath)
+    const course = {
+      id:10101, code:'TEST 101', name:'Fall 2026 TEST 101 - Merge',
+      isActive:true, startDate:null, endDate:null
+    }
+    const longPolicy = `This course follows the University Academic Regulations regarding class attendance, which state that students are expected to be present for every meeting. When conflicts or absences can be anticipated, notify the instructor in advance. ${'Further absence procedures apply. '.repeat(12)}`
+    const syllabus = parseSyllabus({
+      courseId:course.id, courseName:course.name, timezone:'America/New_York',
+      sourceKind:'simple-syllabus-v2', text:`Attendance Policy\n${longPolicy}\nCourse Schedule`
+    })
+    const payload = {
+      baseUrl:'https://example.test', courses:[course], items:[], syllabi:[syllabus], warnings:[], excludedCourseIds:[],
+      stats:{ enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:1 }
+    }
+    let state = database.importBrightspace(payload).state
+    const stored = state.syllabi[0]
+    database.saveSyllabus({
+      ...stored, attendancePolicy:longPolicy,
+      fieldResults:{ ...stored.fieldResults, attendancePolicy:{ display:longPolicy, type:'attendance_expected', sources:[] } }
+    })
+    database.saveSetting({ key:'syllabusParserVersion', value:'11' })
+
+    const upgraded = await DatabaseService.create(filePath)
+    state = upgraded.getState()
+    expect(state.syllabi[0].attendancePolicy.length).toBeLessThan(longPolicy.length)
+    expect(state.syllabi[0].fieldResults.attendancePolicy.sources.length).toBeGreaterThan(0)
+  })
+
+  it('refreshes stale automatic evidence while preserving manual summaries and corrected evidence', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-routine-syllabus-safe-refresh-'))
+    temporaryDirectories.push(directory)
+    const filePath = path.join(directory, 'test.sqlite')
+    const database = await DatabaseService.create(filePath)
+    const course = {
+      id:240, code:'CS 240', name:'Fall 2026 CS 24000 - Merge',
+      isActive:true, startDate:null, endDate:null
+    }
+    const text = `Course Description
+Systems programming fundamentals.
+Course Learning Outcomes
+You are expected to attend lectures barring an emergency.
+Attendance Policy
+This is a face-to-face course. It is in your best interest to attend all lectures and labs.
+Late Work
+Late assignments lose 10% for each day after the deadline.
+Course Schedule`
+    const syllabus = parseSyllabus({
+      courseId:course.id, courseName:course.name, timezone:'America/New_York',
+      sourceKind:'simple-syllabus-v2', text
+    })
+    const payload = {
+      baseUrl:'https://example.test', courses:[course], items:[], syllabi:[syllabus], warnings:[], excludedCourseIds:[],
+      stats:{ enrolledCourses:1, currentCourses:1, skippedByAccessWindow:0, skippedNonAcademic:0, inaccessibleCourses:0, syllabiFound:1 }
+    }
+    const stored = database.importBrightspace(payload).state.syllabi[0]
+    const correctedLateSource = {
+      ...stored.fieldResults.latePolicy.sources[0],
+      correctedText:'Late assignments lose 5% for each day after the deadline.'
+    }
+    database.saveSyllabus({
+      ...stored,
+      rawSummary:'My manually edited course summary.',
+      attendancePolicy:'An old automatically generated attendance block that should be replaced.',
+      fieldResults:{
+        ...stored.fieldResults,
+        rawSummary:{ ...stored.fieldResults.rawSummary, display:'My manually edited course summary.', type:'manual' },
+        attendancePolicy:{
+          display:'An old automatically generated attendance block that should be replaced.',
+          type:'attendance_expected',
+          sources:[{
+            section:'Course Learning Outcomes', page:null,
+            text:'You are expected to attend lectures barring an emergency.',
+            highlights:[{ start:8, end:26 }]
+          }]
+        },
+        latePolicy:{ ...stored.fieldResults.latePolicy, sources:[correctedLateSource] }
+      }
+    })
+    database.saveSetting({ key:'syllabusParserVersion', value:'11' })
+
+    const upgraded = await DatabaseService.create(filePath)
+    const result = upgraded.getState().syllabi[0]
+    expect(result.rawSummary).toBe('My manually edited course summary.')
+    expect(result.fieldResults.rawSummary.type).toBe('manual')
+    expect(result.attendancePolicy).toContain('best interest to attend')
+    expect(result.fieldResults.attendancePolicy.sources.map((source) => source.section)).toEqual(['Attendance Policy'])
+    expect(result.fieldResults.latePolicy.sources[0].correctedText).toBe(correctedLateSource.correctedText)
+  })
+
   it('treats a current Simple Syllabus as more authoritative than legacy overview text', () => {
     expect(syllabusSourcePriority('brightspace:syllabus:1644209:simple-syllabus:new')).toBeGreaterThan(
       syllabusSourcePriority('brightspace:syllabus:1644209:legacy-hash')

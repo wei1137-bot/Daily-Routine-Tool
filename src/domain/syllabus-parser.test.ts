@@ -166,4 +166,111 @@ describe('syllabus parser', () => {
     expect(cs.courseTitle).toBe('Programming in C')
     expect(eaps.courseTitle).toBe('Geosciences in the Cinema')
   })
+
+  it('binds attendance decisions to exact source phrases', () => {
+    const text = `Attendance Policy
+This section is fully asynchronous. There are no class meetings and no attendance is taken. The exams are the exception: both midterms are held in person and attendance at them is required.
+Course Schedule`
+    const parsed = parseSyllabus({
+      courseId:350, courseName:'STAT 350', timezone:'America/Indiana/Indianapolis',
+      sourceKind:'simple-syllabus-v2', text
+    })
+    const evidence = parsed.fieldResults.attendancePolicy
+
+    expect(evidence.type).toBe('mixed')
+    expect(evidence.sources).toHaveLength(1)
+    expect(evidence.sources[0]).toMatchObject({ section:'Attendance Policy', page:null })
+    expect(evidence.sources[0].text).toContain('no attendance is taken')
+    expect(evidence.sources[0].highlights.map((range) => evidence.sources[0].text.slice(range.start, range.end)))
+      .toEqual(['no attendance is taken', 'both midterms are held in person and attendance at them is required'])
+  })
+
+  it('keeps separate late-policy evidence blocks and PDF page numbers', () => {
+    const page = `Homework Assignments
+Homeworks completed late will be marked with 1 point off for each day late.
+Movies and Movie Worksheets
+Late movie worksheets will be marked with 1 point off for each day late.
+Course Schedule`
+    const parsed = parseSyllabus({
+      courseId:106, courseName:'EAPS 106', timezone:'America/Indiana/Indianapolis',
+      sourceKind:'overview-attachment', text:page, pages:[{ page:7, text:page }]
+    })
+    const sources = parsed.fieldResults.latePolicy.sources
+
+    expect(sources.map((source) => source.section)).toEqual(['Homework Assignments', 'Movies and Movie Worksheets'])
+    expect(sources.every((source) => source.page === 7)).toBe(true)
+    for (const source of sources) {
+      for (const range of source.highlights) {
+        expect(range.start).toBeGreaterThanOrEqual(0)
+        expect(range.end).toBeLessThanOrEqual(source.text.length)
+        expect(source.text.slice(range.start, range.end)).toMatch(/1 point off for each day late/i)
+      }
+    }
+  })
+
+  it('preserves suspicious source text exactly and does not fabricate evidence', () => {
+    const office = `Student Consultation Hours
+Monday & Wednesday 11:45 pm - 1:15 pm at MATH 416
+Course Description
+Linear algebra.`
+    const parsed = parseSyllabus({
+      courseId:351, courseName:'MA 351', timezone:'America/Indiana/Indianapolis',
+      sourceKind:'overview-attachment', text:office, pages:[{ page:1, text:office }]
+    })
+    expect(parsed.fieldResults.officeHours.sources[0]).toMatchObject({
+      section:'Student Consultation Hours', page:1
+    })
+    expect(parsed.fieldResults.officeHours.sources[0].text).toContain('11:45 pm')
+
+    const unmatched = parseSyllabus({
+      courseId:1, courseName:'TEST 1', timezone:'UTC',
+      text:'Course Syllabus: grading, exam dates, attendance, academic integrity, and the AI policy.'
+    })
+    expect(unmatched.fieldResults.attendancePolicy.sources).toEqual([])
+  })
+
+  it('keeps policy card displays concise while retaining the full supporting source', () => {
+    const attendance = `Attendance Policy
+This course follows the University Academic Regulations regarding class attendance, which state that students are expected to be present for every meeting. When conflicts or absences can be anticipated, students should notify the instructor as far in advance as possible. Additional exception procedures and documentation requirements continue for several more paragraphs.
+Late Work
+We allow late submissions for homework assignments with a penalty of 10% per day late with a 48 hour maximum. There is an initial grace period of six hours where a reduced 2% penalty applies. Additional absence procedures continue for several more paragraphs.`
+    const parsed = parseSyllabus({
+      courseId:240, courseName:'CS 240', timezone:'America/Indiana/Indianapolis', text:attendance
+    })
+
+    expect(parsed.attendancePolicy.length).toBeLessThanOrEqual(261)
+    expect(parsed.latePolicy.length).toBeLessThanOrEqual(261)
+    expect(parsed.fieldResults.attendancePolicy.sources[0].text).toContain('expected to be present')
+    expect(parsed.fieldResults.latePolicy.sources[0].text).toContain('10% per day late')
+  })
+
+  it('prefers the actual attendance section over a similar learning-outcome sentence', () => {
+    const parsed = parseSyllabus({
+      courseId:240, courseName:'CS 240', timezone:'America/Indiana/Indianapolis',
+      text:`Course Learning Outcomes
+You are expected to attend lectures barring an emergency.
+Attendance Policy
+This is a face-to-face course. It is in your best interest to attend all lectures and labs.
+Course Schedule`
+    })
+    expect(parsed.fieldResults.attendancePolicy.sources.map((source) => source.section)).toEqual(['Attendance Policy'])
+  })
+
+  it('keeps evidence inside its recognized section instead of pulling in the preceding section', () => {
+    const parsed = parseSyllabus({
+      courseId:350, courseName:'STAT 350', timezone:'America/Indiana/Indianapolis',
+      text:`Additional Information
+Office: MATH 210
+Course Description
+Credit Hours: 3.00. This course provides a data-oriented introduction to applied statistics, covering probability and inference.
+Attendance Policy
+There are no class meetings and no attendance is taken. Both midterms are held in person and attendance at them is required.`
+    })
+
+    const descriptionSource = parsed.fieldResults.rawSummary.sources[0]
+    expect(descriptionSource.section).toBe('Course Description')
+    expect(descriptionSource.text).not.toContain('Additional Information')
+    expect(descriptionSource.text).not.toContain('Office: MATH 210')
+    expect(parsed.attendancePolicy).toBe('No regular attendance is taken; both in-person midterms require attendance.')
+  })
 })
