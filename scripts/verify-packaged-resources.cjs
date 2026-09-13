@@ -20,6 +20,7 @@ module.exports = async function verifyPackagedResources(context) {
   const resources = applicationResources(context)
   const archive = path.join(resources, 'app.asar')
   requireFile(archive, 'application archive')
+  requireFile(path.join(resources, 'logo.png'), 'transparent runtime Dock icon')
   requireFile(path.join(resources, 'app-icon.png'), 'runtime icon')
   requireFile(path.join(resources, 'tessdata', 'eng.traineddata.gz'), 'Tesseract English language data')
 

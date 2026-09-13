@@ -60,6 +60,10 @@
     ],
     "extraResources": [
       {
+        "from": "public/logo.png",
+        "to": "logo.png"
+      },
+      {
         "from": "public/app-icon.png",
         "to": "app-icon.png"
       },

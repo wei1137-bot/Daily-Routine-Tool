@@ -16,6 +16,7 @@ describe('runtime resource paths', () => {
 
   it('resolves packaged assets and OCR data from process.resourcesPath', () => {
     expect(runtimeAssetPath('app-icon.png', context)).toBe(path.join(context.resourcesPath, 'app-icon.png'))
+    expect(runtimeAssetPath('logo.png', context)).toBe(path.join(context.resourcesPath, 'logo.png'))
     expect(tesseractLanguagePath(context, 'development-tessdata')).toBe(path.join(context.resourcesPath, 'tessdata'))
   })
 

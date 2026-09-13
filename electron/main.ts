@@ -249,7 +249,10 @@ else {
   app.whenReady().then(async () => {
     if (usesMacApplicationMenu()) {
       Menu.setApplicationMenu(Menu.buildFromTemplate(macApplicationMenuTemplate(app.isPackaged)))
-      if (!app.isPackaged) app.dock?.setIcon(assetPath('logo.png'))
+      // macOS 26 puts legacy foreground-only ICNS artwork on a gray rounded tile.
+      // Override the running Dock tile with the original transparent mark in both
+      // development and packaged builds so only the K glyph is visible.
+      app.dock?.setIcon(assetPath('logo.png'))
     }
     const databasePath = userData.stableDatabase
     database = await DatabaseService.create(databasePath)
