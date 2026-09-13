@@ -220,10 +220,19 @@ async function runDailyRefresh() {
   await Promise.all(jobs)
 }
 
-const userData = prepareStableUserData(canonicalAppDataRoot(app.getPath('appData'), app.getPath('home')))
+const electronAppDataPath = app.getPath('appData')
+const electronHomePath = app.getPath('home')
+const canonicalDataRoot = canonicalAppDataRoot(
+  electronAppDataPath,
+  electronHomePath,
+  process.platform,
+  process.env.APPDATA
+)
+const userData = prepareStableUserData(canonicalDataRoot)
 app.setPath('userData', userData.stablePath)
 const hasLock = app.requestSingleInstanceLock()
 writeStartupDiagnostic(`module loaded; single-instance lock=${hasLock ? 'acquired' : 'unavailable'}`)
+writeStartupDiagnostic(`data paths; electronAppData=${electronAppDataPath}; electronHome=${electronHomePath}; environmentAppData=${process.env.APPDATA ?? 'unset'}; canonicalRoot=${canonicalDataRoot}; userData=${userData.stablePath}`)
 if (userData.databaseMigrated) writeStartupDiagnostic(`migrated legacy database from ${userData.legacyDatabase}`)
 if (!hasLock) { isQuitting = true; app.quit() }
 else {

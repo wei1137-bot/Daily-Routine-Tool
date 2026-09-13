@@ -59,8 +59,8 @@ describe('runtime resource paths', () => {
 
   it('keeps transparent padding around the macOS menu-bar glyph without changing its canvas size', async () => {
     for (const [name, maximumWidth, maximumHeight] of [
-      ['tray-iconTemplate.png', 10, 12],
-      ['tray-iconTemplate@2x.png', 20, 24]
+      ['tray-iconTemplate.png', 12, 12],
+      ['tray-iconTemplate@2x.png', 22, 26]
     ] as const) {
       const icon = await loadImage(path.resolve('build', name))
       const canvas = createCanvas(icon.width, icon.height)

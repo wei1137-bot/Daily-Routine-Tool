@@ -135,7 +135,7 @@ export function App() {
       }
       {page === 'schedule' && <SchedulePage courses={state.courses} meetings={state.meetings}
         onSave={async (meetings, deletedIds) => { await perform(() => window.dailyRoutine.saveSchedule({ meetings, deletedIds })) }}/>} 
-      {page === 'calendar' && <CalendarPage courses={state.courses} events={displayEvents} plans={state.eventPlans} timezone={defaultTimezone} onOpenEvent={setEventModal} onAdd={() => setEventModal('new')}
+      {page === 'calendar' && <CalendarPage courses={state.courses} events={displayEvents} plans={state.eventPlans} timezone={defaultTimezone} onOpenEvent={setEventModal}
         onSavePlans={async (plans) => { await perform(() => window.dailyRoutine.saveEventPlans({ plans })) }}/>} 
       {page === 'settings' && <SettingsPage courses={state.courses} settings={state.settings}
         onSaveSetting={async (key,value) => { await perform(() => window.dailyRoutine.saveSetting({key,value})) }}

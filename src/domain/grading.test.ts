@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { GradingItem } from './types'
-import { gradeAThresholdPercent, gradeContribution, gradingModeFor, projectedGrade } from './grading'
+import { gradeAThresholdPercent, gradeContribution, gradingModeFor, projectedGrade, toLossOnlyGradingItems } from './grading'
 
 const item = (value: Partial<GradingItem>): GradingItem => ({
   id:'grade', courseId:'course', label:'Final', weight:25, ...value
@@ -14,18 +14,36 @@ describe('grade planning calculations', () => {
   })
 
   it('calculates weighted percentage contributions', () => {
-    expect(gradeContribution(item({ currentPoints:90, currentMode:'earned' }), 'percentage')).toEqual({ earned:90, contribution:22.5 })
-    expect(gradeContribution(item({ currentPoints:10, currentMode:'lost' }), 'percentage')).toEqual({ earned:90, contribution:22.5 })
+    expect(gradeContribution(item({ weight:22, currentPoints:null, currentMode:'lost' }), 'percentage')).toEqual({ earned:100, contribution:22 })
+    expect(gradeContribution(item({ weight:22, currentPoints:0, currentMode:'lost' }), 'percentage')).toEqual({ earned:100, contribution:22 })
+    expect(gradeContribution(item({ weight:22, currentPoints:5, currentMode:'lost' }), 'percentage')).toEqual({ earned:95, contribution:20.9 })
   })
 
-  it('calculates point totals and treats an empty lost-score field as zero lost', () => {
+  it('calculates point totals while keeping blank loss inputs visually distinct from zero', () => {
     const grades = [
       item({ id:'exam', weight:0, points:450, currentPoints:45, currentMode:'lost' }),
-      item({ id:'work', weight:0, points:165, currentPoints:150, currentMode:'earned' })
+      item({ id:'work', weight:0, points:165, currentPoints:15, currentMode:'lost' })
     ]
     expect(projectedGrade(grades, 'points')).toEqual({ complete:true, hasScores:true, value:555 })
     expect(gradeContribution(item({ points:100, currentPoints:null, currentMode:'lost' }), 'points')).toEqual({ earned:100, contribution:100 })
+    expect(gradeContribution(item({ points:100, currentPoints:0, currentMode:'lost' }), 'points')).toEqual({ earned:100, contribution:100 })
     expect(projectedGrade([...grades, item({ id:'blank', weight:0, points:100, currentPoints:null, currentMode:'lost' })], 'points')).toEqual({ complete:true, hasScores:true, value:655 })
+    expect(projectedGrade([item({ points:100, currentPoints:null, currentMode:'lost' })], 'points')).toEqual({ complete:true, hasScores:true, value:100 })
+  })
+
+  it('converts saved earned-mode values to equivalent loss-only values', () => {
+    expect(toLossOnlyGradingItems([
+      item({ id:'percentage', currentPoints:95, currentMode:'earned' }),
+      item({ id:'blank', currentPoints:null, currentMode:'earned' })
+    ], 'percentage')).toEqual([
+      item({ id:'percentage', currentPoints:5, currentMode:'lost' }),
+      item({ id:'blank', currentPoints:null, currentMode:'lost' })
+    ])
+    expect(toLossOnlyGradingItems([
+      item({ id:'points', points:165, currentPoints:150, currentMode:'earned' })
+    ], 'points')).toEqual([
+      item({ id:'points', points:165, currentPoints:15, currentMode:'lost' })
+    ])
   })
 
   it('reads the A threshold from common syllabus grading-scale formats', () => {

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { CalendarClock, ChevronLeft, ChevronRight, Plus } from 'lucide-react'
+import { CalendarClock, ChevronLeft, ChevronRight } from 'lucide-react'
 import { DateTime } from 'luxon'
 import type { AcademicEvent, Course, EventPlan } from '../domain/types'
 import { calendarCourseColorStyle, courseColorClass } from '../domain/courseColor'
@@ -7,9 +7,9 @@ import { eventDateTime } from '../domain/event/eventUtils'
 import { useI18n } from '../i18n'
 import { planningWindow, WeeklyPlannerModal, type EventPlanChange } from '../components/WeeklyPlannerModal'
 
-export function CalendarPage({ courses, events, plans, timezone, onOpenEvent, onAdd, onSavePlans }: {
+export function CalendarPage({ courses, events, plans, timezone, onOpenEvent, onSavePlans }: {
   courses: Course[]; events: AcademicEvent[]; plans: EventPlan[]; timezone: string
-  onOpenEvent: (event: AcademicEvent) => void; onAdd: () => void; onSavePlans: (changes: EventPlanChange[]) => Promise<void>
+  onOpenEvent: (event: AcademicEvent) => void; onSavePlans: (changes: EventPlanChange[]) => Promise<void>
 }) {
   const { language, locale, t } = useI18n()
   const now = DateTime.now().setZone(timezone)
@@ -26,12 +26,9 @@ export function CalendarPage({ courses, events, plans, timezone, onOpenEvent, on
     return Array.from({ length: 42 }, (_, i) => first.plus({ days: i }))
   }, [month])
   return <div className="page calendar-page">
-    <header className="page-header"><div><p className="eyebrow">{t('academicSchedule')}</p><h1>{t('calendar')}</h1><p className="subtitle">{t('calendarSubtitle')}</p></div><button className="button primary" onClick={onAdd}><Plus size={17}/>{t('addEvent')}</button></header>
-    <div className="calendar-planning-row"><button className="weekly-plan-card" onClick={() => setPlannerOpen(true)} aria-label={t('openPlanner')}>
-      <span className="weekly-plan-icon"><CalendarClock size={20}/></span>
-      <span className="weekly-plan-copy"><strong>{t('nextWeekPlan')}</strong><small>{t('nextWeekPlanHint')}</small></span>
-      <span className="weekly-plan-count"><strong>{assignedCount}/{plannerTasks.length}</strong><small>{t('planned')}</small></span>
-      <ChevronRight size={17}/>
+    <header className="page-header calendar-page-header"><div><p className="eyebrow">{t('academicSchedule')}</p><h1>{t('calendar')}</h1><p className="subtitle">{t('calendarSubtitle')}</p></div></header>
+    <div className="calendar-content-actions"><button className="button primary calendar-plan-action" onClick={() => setPlannerOpen(true)} aria-label={t('openPlanner')}>
+      <CalendarClock size={17}/><span>{t('nextWeekPlan')}</span><span className="calendar-plan-progress"><strong>{assignedCount} / {plannerTasks.length}</strong><small>{t('planned')}</small></span>
     </button></div>
     <section className="calendar-shell"><div className="calendar-toolbar"><h2>{month.setLocale(locale).toFormat(language === 'zh' ? 'yyyy年 LLLL' : 'LLLL yyyy')}</h2><div><button className="button secondary small" onClick={() => setMonth(DateTime.now().setZone(timezone).startOf('month'))}>{t('thisMonth')}</button><button className="icon-button bordered" onClick={() => setMonth((m) => m.minus({ months: 1 }))}><ChevronLeft size={18}/></button><button className="icon-button bordered" onClick={() => setMonth((m) => m.plus({ months: 1 }))}><ChevronRight size={18}/></button></div></div>
       <div className="calendar-weekdays">{(language === 'zh' ? ['周一','周二','周三','周四','周五','周六','周日'] : ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']).map((d) => <div key={d}>{d}</div>)}</div>

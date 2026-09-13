@@ -92,6 +92,12 @@ export function eventDateTime(iso: string, timezone: string, locale?: string) {
   return locale ? value.setLocale(locale) : value
 }
 
+export function isWithinNextMonth(dueAt: string, timezone: string, reference: DateTime = DateTime.now()) {
+  const today = reference.setZone(timezone).startOf('day')
+  const due = eventDateTime(dueAt, timezone)
+  return due >= today && due <= today.plus({ months:1 }).endOf('day')
+}
+
 export function defaultEventDueAt(timezone: string, reference: DateTime = DateTime.now()) {
   const localDue = reference.setZone(timezone).plus({ days: 1 }).toFormat("yyyy-MM-dd'T'HH:mm")
   return fromDateTimeInput(localDue, timezone)

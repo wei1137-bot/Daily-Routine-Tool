@@ -13,11 +13,24 @@ export function gradingModeFor(items: GradingItem[], fallback: GradingMode = 'pe
   return fallback
 }
 
+export function toLossOnlyGradingItems(items: GradingItem[], mode: GradingMode): GradingItem[] {
+  return items.map((item) => {
+    if (item.currentMode !== 'earned' || item.currentPoints === null || item.currentPoints === undefined) {
+      return { ...item, currentMode:'lost' }
+    }
+    const earned = Number(item.currentPoints)
+    if (!Number.isFinite(earned)) return { ...item, currentPoints:null, currentMode:'lost' }
+    const maximum = mode === 'points' ? Math.max(0, Number(item.points ?? 0)) : 100
+    return { ...item, currentPoints:Math.max(0, maximum - earned), currentMode:'lost' }
+  })
+}
+
 export function gradeContribution(item: GradingItem, mode: GradingMode): GradeContribution {
   const enteredValue = item.currentPoints === null || item.currentPoints === undefined ? 0 : Number(item.currentPoints)
-  const entered = Math.max(0, Number.isFinite(enteredValue) ? enteredValue : 0)
+  if (!Number.isFinite(enteredValue)) return { earned:null, contribution:null }
+  const entered = Math.max(0, enteredValue)
   const maximum = mode === 'points' ? Math.max(0, Number(item.points ?? 0)) : 100
-  const earned = item.currentMode === 'lost' ? Math.max(0, maximum - entered) : entered
+  const earned = Math.max(0, maximum - entered)
   return {
     earned,
     contribution:mode === 'points' ? earned : Number(item.weight || 0) * earned / 100
@@ -26,10 +39,11 @@ export function gradeContribution(item: GradingItem, mode: GradingMode): GradeCo
 
 export function projectedGrade(items: GradingItem[], mode: GradingMode) {
   const contributions = items.map((item) => gradeContribution(item, mode))
+  const planned = contributions.filter((item) => item.contribution !== null)
   return {
-    complete:items.length > 0,
-    hasScores:items.length > 0,
-    value:contributions.reduce((sum, item) => sum + Number(item.contribution ?? 0), 0)
+    complete:items.length > 0 && planned.length === items.length,
+    hasScores:planned.length > 0,
+    value:planned.reduce((sum, item) => sum + Number(item.contribution), 0)
   }
 }
 

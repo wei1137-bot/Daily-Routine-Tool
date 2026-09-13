@@ -78,7 +78,7 @@ async function generateIcon() {
     // Keep the 18/36 px template canvases expected by macOS, but leave enough
     // transparent space that the glyph matches neighboring menu-bar items.
     // This does not affect the .icns artwork used by Finder and the Dock.
-    const padding = size / 6
+    const padding = size / 7
     const width = right - left + 1
     const height = bottom - top + 1
     const scale = Math.min((size - padding * 2) / width, (size - padding * 2) / height)

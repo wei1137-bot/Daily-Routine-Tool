@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DateTime } from 'luxon'
-import { canonicalEventTitle, defaultEventDueAt, eventDateTime, groupForDate, mergeDuplicateEvents, sortEvents } from './eventUtils'
+import { canonicalEventTitle, defaultEventDueAt, eventDateTime, groupForDate, isWithinNextMonth, mergeDuplicateEvents, sortEvents } from './eventUtils'
 import type { AcademicEvent } from '../types'
 
 const event = (id: string, dueAt: string) => ({ id, dueAt } as AcademicEvent)
@@ -77,5 +77,12 @@ describe('event utilities', () => {
     const reference = DateTime.fromISO('2026-09-11T09:00:00Z', { setZone: true })
     expect(eventDateTime(defaultEventDueAt('America/Indiana/Indianapolis', reference), 'America/Indiana/Indianapolis').toFormat("yyyy-MM-dd'T'HH:mm"))
       .toBe('2026-09-12T05:00')
+  })
+
+  it('uses a calendar month rather than a fixed item count for upcoming dates', () => {
+    const reference = DateTime.fromISO('2026-09-13T12:00:00-04:00', { setZone:true })
+    expect(isWithinNextMonth('2026-10-13T23:59:00-04:00', 'America/New_York', reference)).toBe(true)
+    expect(isWithinNextMonth('2026-10-14T00:00:00-04:00', 'America/New_York', reference)).toBe(false)
+    expect(isWithinNextMonth('2026-09-12T23:59:00-04:00', 'America/New_York', reference)).toBe(false)
   })
 })

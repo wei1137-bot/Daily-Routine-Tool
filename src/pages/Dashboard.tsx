@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { DateTime } from 'luxon'
 import { CalendarDays, CalendarPlus, ChevronDown, ChevronUp, Clock3, MapPin, Plus, SlidersHorizontal } from 'lucide-react'
 import type { AcademicEvent, Course, CourseMeeting, EventStatus } from '../domain/types'
-import { groupForDate, sortEvents, type EventGroup } from '../domain/event/eventUtils'
+import { groupForDate, isWithinNextMonth, sortEvents, type EventGroup } from '../domain/event/eventUtils'
 import { EventRow } from '../components/EventRow'
 import { courseColorClass, courseColorStyle } from '../domain/courseColor'
 import { useI18n } from '../i18n'
@@ -18,6 +18,7 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
   const [laterExpanded, setLaterExpanded] = useState(false)
   const [pastExpanded, setPastExpanded] = useState(false)
   const [todayClassesExpanded, setTodayClassesExpanded] = useState(true)
+  const [allExamsExpanded, setAllExamsExpanded] = useState(false)
   const knownCourseIds = useRef(new Set(courses.map((course) => course.id)))
   const [selectedExamCourseIds, setSelectedExamCourseIds] = useState<Set<string>>(() => new Set(courses.map((course) => course.id)))
   const now = DateTime.now().setZone(timezone).setLocale(locale)
@@ -26,6 +27,9 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
   const exams = sortEvents(events.filter((e) => e.type === 'exam' && e.status !== 'done' && DateTime.fromISO(e.dueAt) >= now.startOf('day')))
   const examCourses = courses.filter((course) => exams.some((exam) => exam.courseId === course.id))
   const filteredExams = exams.filter((exam) => selectedExamCourseIds.has(exam.courseId))
+  const monthExams = filteredExams.filter((exam) => isWithinNextMonth(exam.dueAt, timezone, now))
+  const visibleExams = allExamsExpanded ? filteredExams : monthExams
+  const hasLaterExams = filteredExams.length > monthExams.length
   const todayMeetings = meetings
     .filter((meeting) => meeting.dayOfWeek === now.weekday)
     .sort((a,b) => a.startTime.localeCompare(b.startTime))
@@ -93,7 +97,7 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
         {!active.length && <div className="empty-state"><CalendarPlus size={28}/><h3>{t('nothingOnList')}</h3><p>{t('nothingOnListHint')}</p></div>}
         </section>
       </main>
-      <aside className="exams-panel"><div className="panel-title"><span>{t('upcomingExams')}<span className="count-pill">{filteredExams.length}</span></span><button className="text-button exam-add-button" onClick={onAddExam}><Plus size={13}/>{t('addExam')}</button></div>
+      <aside className="exams-panel"><div className="panel-title"><span>{t('upcomingExams')}<span className="count-pill">{visibleExams.length}</span></span><button className="text-button exam-add-button" onClick={onAddExam}><Plus size={13}/>{t('addExam')}</button></div>
         {!!examCourses.length && <details className="exam-course-filter"><summary><SlidersHorizontal size={13}/><span>{examFilterLabel(examCourses,selectedExamCourseIds,t('allCourses'),t('noCoursesSelected'),t('coursesSelected'))}</span><ChevronDown size={13}/></summary>
           <div className="exam-course-options">
             <label><input type="checkbox" checked={examCourses.every((course) => selectedExamCourseIds.has(course.id))} onChange={(event) => setSelectedExamCourseIds(event.target.checked ? new Set(courses.map((course) => course.id)) : new Set())}/><strong>{t('allCourses')}</strong></label>
@@ -104,7 +108,7 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
             })}/><span className={`course-dot ${courseColorClass(course.colorKey)}`} style={courseColorStyle(course.colorKey)}/><span>{course.code}</span></label>)}
           </div>
         </details>}
-        {filteredExams.map((event) => {
+        {visibleExams.map((event) => {
           const course = courses.find((c) => c.id === event.courseId)
           const due = DateTime.fromISO(event.dueAt, { setZone: true }).setZone(event.dueTimezone)
           return <button className="exam-card" key={event.id} onClick={() => onOpenEvent(event)}>
@@ -112,7 +116,10 @@ export function Dashboard({ courses, events, meetings, timezone, hideCompleted, 
             <span><strong>{event.title}</strong><small>{course?.code} · {due.toFormat('h:mm a')}</small></span>
           </button>
         })}
-        {!filteredExams.length && <p className="subtle empty-copy">{exams.length ? t('noSelectedCourseExams') : t('noUpcomingExams')}</p>}
+        {!visibleExams.length && <p className="subtle empty-copy">{!filteredExams.length && exams.length ? t('noSelectedCourseExams') : filteredExams.length ? t('noExamsNextMonth') : t('noUpcomingExams')}</p>}
+        {(hasLaterExams || allExamsExpanded) && <button type="button" className="exam-scope-toggle" aria-expanded={allExamsExpanded} onClick={() => setAllExamsExpanded((value) => !value)}>
+          {allExamsExpanded ? t('collapseExams') : t('showAllExams')}{allExamsExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
+        </button>}
       </aside>
     </div>
   </div>

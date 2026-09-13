@@ -4,7 +4,18 @@ import path from 'node:path'
 export const STABLE_USER_DATA_DIRECTORY = 'Daily Routine'
 export const LEGACY_USER_DATA_DIRECTORY = 'daily-routine'
 
-export function canonicalAppDataRoot(fallbackAppDataPath: string, homeDirectory: string, platform = process.platform) {
+export function canonicalAppDataRoot(
+  fallbackAppDataPath: string,
+  homeDirectory: string,
+  platform = process.platform,
+  environmentAppData = process.env.APPDATA
+) {
+  // Electron can inherit virtualized paths when launched as a child of a
+  // packaged development tool. APPDATA still identifies the normal Windows
+  // roaming profile used by dev, installed, and unpacked builds.
+  if (platform === 'win32' && environmentAppData && /^[a-z]:[\\/]/i.test(environmentAppData)) {
+    return path.normalize(environmentAppData)
+  }
   if (platform === 'win32' && /^[a-z]:[\\/]/i.test(homeDirectory)) {
     return path.join(homeDirectory, 'AppData', 'Roaming')
   }

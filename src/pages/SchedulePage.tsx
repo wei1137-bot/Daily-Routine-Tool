@@ -88,7 +88,7 @@ export function SchedulePage({ courses, meetings, onSave }: {
   const closeImport = () => { setImportOpen(false); setDragging(false); dragDepthRef.current = 0; setMessage(undefined) }
   return <div className="page schedule-page">
     <header className="page-header"><div><p className="eyebrow">{t('weeklyPlan')}</p><h1>{t('schedule')}</h1><p className="subtitle">{t('scheduleSubtitle')}</p></div>
-      <div className="schedule-header-actions"><button className="button secondary" onClick={beginEditing}><Pencil size={16}/>{t('editSchedule')}</button><button className="button primary" onClick={() => { setMessage(undefined); setImportOpen(true) }}><ImagePlus size={16}/>{t('importScheduleImage')}</button></div>
+      <div className="schedule-header-actions"><button className="button secondary" onClick={beginEditing}><Pencil size={16}/>{t('editSchedule')}</button><button className={`button ${meetings.length ? 'secondary' : 'primary'}`} onClick={() => { setMessage(undefined); setImportOpen(true) }}><ImagePlus size={16}/>{t('importScheduleImage')}</button></div>
     </header>
     {!meetings.length ? <button className="schedule-dropzone" onClick={() => { setMessage(undefined); setImportOpen(true) }}>
         <Upload size={28}/><strong>{t('dropSchedule')}</strong><span>{t('dropScheduleHint')}</span>

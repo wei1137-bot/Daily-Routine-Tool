@@ -88,7 +88,6 @@ export function SettingsPage({ courses, settings, onSaveSetting, onStateChange, 
 
   const previewZoom = (value: number) => {
     setZoomPercent(value)
-    void window.dailyRoutine.previewWindowZoom(value)
   }
 
   const saveZoom = async (value: number) => {

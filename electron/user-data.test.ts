@@ -24,13 +24,23 @@ describe('stable user data directory', () => {
     expect(canonicalAppDataRoot(
       'C:\\Users\\me\\AppData\\Local\\Packages\\Launcher\\LocalCache\\Roaming',
       'C:\\Users\\me',
-      'win32'
+      'win32',
+      ''
     )).toBe(path.join('C:\\Users\\me', 'AppData', 'Roaming'))
+  })
+
+  it('prefers APPDATA over virtualized Electron home and appData paths on Windows', () => {
+    expect(canonicalAppDataRoot(
+      'C:\\Users\\me\\AppData\\Local\\Packages\\Launcher\\LocalCache\\Roaming',
+      'C:\\Users\\me\\AppData\\Local\\Packages\\Launcher\\LocalCache',
+      'win32',
+      'C:\\Users\\me\\AppData\\Roaming'
+    )).toBe(path.normalize('C:\\Users\\me\\AppData\\Roaming'))
   })
 
   it('uses the normal macOS Application Support root without rewriting it', () => {
     const applicationSupport = '/Users/me/Library/Application Support'
-    expect(canonicalAppDataRoot(applicationSupport, '/Users/me', 'darwin')).toBe(applicationSupport)
+    expect(canonicalAppDataRoot(applicationSupport, '/Users/me', 'darwin', '')).toBe(applicationSupport)
   })
 
   it('imports a valid legacy database only when the stable database is absent', async () => {
